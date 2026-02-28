@@ -1,5 +1,5 @@
 # --- CONFIGURATION ---
-SOURCE_PATHS = [r"c:\TerrysBackup"]
+SOURCE_PATHS = [r"c:\TerrysBackup\pictures"]
 DEST_ROOT = r"C:\website-test"
 
 import os
