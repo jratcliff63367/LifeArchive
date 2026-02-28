@@ -6,7 +6,7 @@ from collections import defaultdict
 from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for
 
 # --- CONFIGURATION ---
-ARCHIVE_ROOT = r"C:\Photo-Website" 
+ARCHIVE_ROOT = r"C:\website-test" 
 DB_PATH = os.path.join(ARCHIVE_ROOT, "archive_index.db")
 ASSETS_DIR = os.path.join(ARCHIVE_ROOT, "_web_layout", "assets")
 
