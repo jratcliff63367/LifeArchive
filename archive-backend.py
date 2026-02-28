@@ -2,11 +2,9 @@ import os
 import sqlite3
 import json
 import logging
-import mimetypes
 import hashlib
-import time
 from collections import defaultdict
-from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, jsonify
+from flask import Flask, request, render_template_string, send_from_directory, jsonify
 from PIL import Image
 
 # --- CONFIGURATION ---
@@ -17,10 +15,8 @@ THUMB_DIR = os.path.join(ARCHIVE_ROOT, "_thumbs")
 COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
 
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
-
 THEME_COLOR = "#bb86fc"
 
-# --- SILENCE FLASK LOGGING ---
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
@@ -47,7 +43,6 @@ def load_cache():
             item = dict(row)
             item.update({'_year': yyyy, '_decade': decade})
             
-            # Extract tags for pills
             tags = []
             if row['path_tags']: tags.extend([t.strip() for t in row['path_tags'].split(',')])
             if row['custom_tags']: tags.extend([t.strip() for t in row['custom_tags'].split(',')])
@@ -106,17 +101,10 @@ HTML_TEMPLATE = """
         :root { --accent: {{ theme_color }}; --bg: #0d0d0d; --card-bg: #1a1a1a; --select: #4285f4; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: #fff; margin: 0; padding: 0; overflow-x: hidden; }
         
-        /* SELECTION BAR */
-        #selection-bar { 
-            position: fixed; top: -100px; left: 0; right: 0; height: 70px; 
-            background: #1a1a1a; border-bottom: 2px solid var(--select); 
-            z-index: 10005; display: flex; align-items: center; padding: 0 40px; 
-            transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
+        #selection-bar { position: fixed; top: -100px; left: 0; right: 0; height: 70px; background: #1a1a1a; border-bottom: 2px solid var(--select); z-index: 10005; display: flex; align-items: center; padding: 0 40px; transition: 0.3s; }
         #selection-bar.active { top: 0; }
         .bar-btn { background: #333; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; margin-left: 15px; cursor: pointer; font-weight: 700; }
-        .bar-btn:hover { background: var(--select); }
-
+        
         .hero-banner { width: 100%; height: 250px; background: #111; background-image: linear-gradient(to bottom, rgba(13,13,13,0) 60%, rgba(13,13,13,1) 100%), url('/assets/{{ banner_img }}'); background-size: cover; background-position: center; border-bottom: 1px solid #333; }
         .nav-bar { background: rgba(10,10,10,0.9); backdrop-filter: blur(15px); padding: 15px 40px; border-bottom: 1px solid #333; display: flex; gap: 40px; position: sticky; top: 0; z-index: 1000; }
         .nav-bar a { color: #888; text-decoration: none; font-weight: 700; font-size: 0.85em; letter-spacing: 1px; text-transform: uppercase; }
@@ -125,24 +113,16 @@ HTML_TEMPLATE = """
         .content { padding: 40px; max-width: 1600px; margin: 0 auto; }
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 30px; }
         .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
-        
-        /* CARDS */
         .card { background: var(--card-bg); border-radius: 12px; border: 1px solid #333; overflow: hidden; position: relative; transition: 0.2s; display: flex; flex-direction: column; }
         .card:hover { border-color: var(--accent); }
-        .hero-preview { width: 100%; aspect-ratio: 1/1; background: #000; cursor: pointer; position: relative; }
+        .hero-preview { width: 100%; aspect-ratio: 1/1; background: #000; cursor: pointer; }
         .hero-preview img { width: 100%; height: 100%; object-fit: cover; }
         
-        /* SELECTION DOTS */
-        .select-dot { 
-            position: absolute; top: 12px; left: 12px; width: 24px; height: 24px; 
-            background: rgba(0,0,0,0.4); border: 2px solid #fff; border-radius: 50%; 
-            z-index: 100; cursor: pointer; display: none; align-items: center; justify-content: center; 
-        }
+        .select-dot { position: absolute; top: 12px; left: 12px; width: 24px; height: 24px; background: rgba(0,0,0,0.4); border: 2px solid #fff; border-radius: 50%; z-index: 100; cursor: pointer; display: none; align-items: center; justify-content: center; }
         .card:hover .select-dot, .card.selected .select-dot { display: flex; }
         .card.selected .select-dot { background: var(--select); border-color: var(--select); color: #fff; }
         .card.selected { border: 3px solid var(--select); }
 
-        /* TAG PILLS */
         .tag-pill { display: inline-block; background: #333; color: #aaa; padding: 4px 10px; border-radius: 4px; font-size: 0.75em; font-weight: 800; margin-right: 5px; margin-top: 5px; text-decoration: none; }
         .tag-pill:hover { background: var(--accent); color: #000; }
 
@@ -154,10 +134,13 @@ HTML_TEMPLATE = """
         #lightbox.active { display: flex; }
         #lb-img { max-width: 90%; max-height: 85vh; object-fit: contain; }
         .close-btn { position: absolute; top: 20px; right: 30px; font-size: 40px; cursor: pointer; color: #888; }
+        .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); background: none; border: none; color: #fff; font-size: 5em; cursor: pointer; opacity: 0.2; transition: 0.2s; z-index: 10000; }
+        .lb-nav:hover { opacity: 1; color: var(--accent); }
         .info-trigger { position: absolute; bottom: 30px; right: 30px; background: #222; padding: 12px 24px; border-radius: 40px; cursor: pointer; font-weight: 800; border: 1px solid #444; z-index: 10005; }
-        #lb-sidebar { position: absolute; top: 0; right: -450px; width: 450px; bottom: 0; background: rgba(15,15,15,0.98); border-left: 1px solid #333; padding: 40px 30px; z-index: 10001; transition: 0.3s; display: flex; flex-direction: column; box-sizing: border-box; }
+        #lb-sidebar { position: absolute; top: 0; right: -450px; width: 450px; bottom: 0; background: rgba(15,15,15,0.98); border-left: 1px solid #333; padding: 40px 30px; z-index: 10001; transition: 0.3s; display: flex; flex-direction: column; box-sizing: border-box; overflow-y: auto; }
         #lb-sidebar.visible { right: 0; }
         .meta-label { color: var(--accent); font-weight: 900; text-transform: uppercase; font-size: 0.75em; letter-spacing: 2px; display: block; margin-top: 15px; }
+        textarea, input { width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 10px; margin-top: 5px; border-radius: 4px; box-sizing: border-box; font-family: inherit; }
         .action-btn { background: var(--accent); color: #000; border: none; padding: 12px; border-radius: 6px; font-weight: bold; width: 100%; margin-top: 10px; cursor: pointer; text-transform: uppercase; }
     </style>
 </head>
@@ -167,7 +150,7 @@ HTML_TEMPLATE = """
     <div id="selection-count" style="font-weight:900; font-size:1.2em;">0 selected</div>
     <div style="flex-grow:1;"></div>
     <button class="bar-btn" onclick="bulkRotate(90)">Rotate 90° ↻</button>
-    <button class="bar-btn" style="background:#cf6679;" onclick="bulkDelete()">Hide Selected</button>
+    <button class="bar-btn" style="background:#cf6679;" onclick="bulkDelete()">Hide</button>
     <button class="bar-btn" onclick="clearSelection()">Cancel</button>
 </div>
 
@@ -191,7 +174,7 @@ HTML_TEMPLATE = """
         <div class="grid">
             {% for card in cards %}
             <div class="card" id="card-{{ card.id }}">
-                <div class="hero-preview" onclick="handleGridClick(event, '{{ card.id | replace(\"'\", \"\\\\'\") }}')">
+                <div class="hero-preview" onclick="handleGridClick(event, '{{ card.manifest_key | replace(\"'\", \"\\\\'\") }}')">
                     {% if card.comp_hash %}
                         <img src="/composite/{{ card.comp_hash }}.jpg" loading="lazy">
                     {% else %}<div style="width:100%; height:100%; background:#111;"></div>{% endif %}
@@ -224,13 +207,15 @@ HTML_TEMPLATE = """
 
 <div id="lightbox">
     <span class="close-btn" onclick="closeLB()">&times;</span>
+    <button class="lb-nav" style="left:20px;" onclick="changeImg(-1)">&#10094;</button>
     <div id="lb-img-container" oncontextmenu="handlePhotoContext(event, manifests[curManifest][curIdx].sha1)"><img id="lb-img" src=""></div>
+    <button class="lb-nav" style="right:20px;" onclick="changeImg(1)">&#10095;</button>
     <div class="info-trigger" onclick="toggleInfo()">CURATE (E)</div>
     <div id="lb-sidebar">
         <h2 style="margin:0;">Curation</h2>
         <span class="meta-label">File</span><div id="meta-file" style="font-size:0.8em; color:#888;"></div>
         <button class="action-btn" onclick="rotateImage(90, true)">Rotate 90° ↻</button>
-        <span class="meta-label">Notes</span><textarea id="input-notes" style="height:120px;"></textarea>
+        <span class="meta-label">Notes</span><textarea id="input-notes"></textarea>
         <span class="meta-label">Tags</span><input type="text" id="input-tags">
         <button class="action-btn" onclick="saveMetadata()">Save Changes</button>
     </div>
@@ -238,20 +223,14 @@ HTML_TEMPLATE = """
 
 <script>
     const manifests = {{ manifests | tojson | safe }};
-    let curManifest = null, curIdx = 0, menuSha1 = '', selectedSet = new Set(), lastSelectedIndex = -1;
+    let curManifest = null, curIdx = 0, menuSha1 = '', selectedSet = new Set(), lastSelectedIndex = -1, infoOpen = false;
 
-    // --- GRID COORDINATE PORTAL ---
     function handleGridClick(event, mKey) {
         const rect = event.target.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        const col = Math.floor(x / (rect.width / 4));
-        const row = Math.floor(y / (rect.height / 4));
-        const clickedIdx = (row * 4) + col;
-        openLB(Math.min(clickedIdx, manifests[mKey].length - 1), mKey);
+        const clickedIdx = (Math.floor((event.clientY - rect.top) / (rect.height / 4)) * 4) + Math.floor((event.clientX - rect.left) / (rect.width / 4));
+        openLB(clickedIdx, mKey);
     }
 
-    // --- SELECTION ENGINE ---
     function toggleSelection(e, sha1) {
         e.stopPropagation();
         if (selectedSet.has(sha1)) selectedSet.delete(sha1); else selectedSet.add(sha1);
@@ -275,15 +254,13 @@ HTML_TEMPLATE = """
     }
     function clearSelection() { selectedSet.clear(); lastSelectedIndex = -1; renderSelection(); }
 
-    // --- AJAX ROTATION (CACHE BUST) ---
     function rotateImage(deg, fromLB = false) {
         const sha1 = fromLB ? manifests[curManifest][curIdx].sha1 : menuSha1;
         fetch('/api/rotate/' + sha1, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({degrees:deg})})
         .then(() => {
             const ts = new Date().getTime();
             if (fromLB) document.getElementById('lb-img').src = document.getElementById('lb-img').src.split('?')[0] + '?t=' + ts;
-            const thumb = document.getElementById('img-' + sha1); 
-            if (thumb) thumb.src = thumb.src.split('?')[0] + '?t=' + ts;
+            const thumb = document.getElementById('img-' + sha1); if (thumb) thumb.src = thumb.src.split('?')[0] + '?t=' + ts;
         });
     }
 
@@ -292,8 +269,13 @@ HTML_TEMPLATE = """
         Promise.all(list.map(s => fetch('/api/rotate/' + s, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({degrees:deg})}))).then(() => location.reload());
     }
 
-    // --- LIGHTBOX ---
-    function openLB(idx, mKey) { curManifest = mKey; curIdx = idx; updateLB(); document.getElementById('lightbox').classList.add('active'); }
+    function openLB(idx, mKey) { 
+        curManifest = mKey; 
+        curIdx = Math.min(idx, manifests[mKey].length - 1); 
+        updateLB(); 
+        document.getElementById('lightbox').classList.add('active'); 
+    }
+    
     function updateLB() {
         const item = manifests[curManifest][curIdx];
         document.getElementById('lb-img').src = "/media/" + encodeURIComponent(item.path);
@@ -301,14 +283,28 @@ HTML_TEMPLATE = """
         document.getElementById('input-notes').value = item.custom_notes || '';
         document.getElementById('input-tags').value = item.custom_tags || '';
     }
+    
+    function changeImg(n) { curIdx = (curIdx + n + manifests[curManifest].length) % manifests[curManifest].length; updateLB(); }
+    function closeLB() { document.getElementById('lightbox').classList.remove('active'); document.getElementById('lb-sidebar').classList.remove('visible'); infoOpen = false; }
+    function toggleInfo() { infoOpen = !infoOpen; document.getElementById('lb-sidebar').classList.toggle('visible', infoOpen); }
+
     function handlePhotoContext(e, sha1) { e.preventDefault(); menuSha1 = sha1; const m = document.getElementById('context-menu'); m.style.display = 'block'; m.style.left = e.clientX + 'px'; m.style.top = e.clientY + 'px'; }
     window.onclick = () => { document.getElementById('context-menu').style.display = 'none'; }
-    function closeLB() { document.getElementById('lightbox').classList.remove('active'); }
-    function toggleInfo() { document.getElementById('lb-sidebar').classList.toggle('visible'); }
+    
+    document.onkeydown = e => {
+        if(!document.getElementById('lightbox').classList.contains('active')) return;
+        if(e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA') return;
+        if(e.key==="ArrowRight") changeImg(1); if(e.key==="ArrowLeft") changeImg(-1);
+        if(e.key==="Escape") closeLB(); if(e.key.toLowerCase()==="e") toggleInfo();
+    };
     
     function saveMetadata() {
         const item = manifests[curManifest][curIdx];
-        fetch('/api/update_metadata/' + item.sha1, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({custom_notes: document.getElementById('input-notes').value, custom_tags: document.getElementById('input-tags').value})}).then(() => alert("Saved"));
+        fetch('/api/update_metadata/' + item.sha1, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({custom_notes: document.getElementById('input-notes').value, custom_tags: document.getElementById('input-tags').value})}).then(() => {
+            item.custom_notes = document.getElementById('input-notes').value;
+            item.custom_tags = document.getElementById('input-tags').value;
+            alert("Metadata saved locally for session");
+        });
     }
 </script>
 </body>
@@ -359,11 +355,16 @@ def timeline():
     load_cache()
     decades = sorted(list(set(p['_decade'] for p in DB_CACHE)), reverse=True)
     cards = []
+    manifests = {}
     for d in decades:
         d_p = [p for p in DB_CACHE if p['_decade'] == d]
-        cards.append({'id': f"d_{d}", 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/timeline/decade/{d}", 'heroes': d_p[:16], 'tags': []})
+        all_tags = []
+        for p in d_p: all_tags.extend(p['_tags_list'])
+        m_key = f"d_{d}"
+        cards.append({'id': m_key, 'manifest_key': m_key, 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/timeline/decade/{d}", 'heroes': d_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
+        manifests[m_key] = build_manifest(d_p)
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Timeline", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="Timeline", view_type="grid", cards=cards, manifests={c['id']: build_manifest(c['heroes']) for c in cards})
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Timeline", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="Timeline", view_type="grid", cards=cards, manifests=manifests)
 
 @app.route('/timeline/decade/<decade>')
 def timeline_decade(decade):
@@ -371,11 +372,16 @@ def timeline_decade(decade):
     d_p = [p for p in DB_CACHE if p['_decade'] == decade]
     years = sorted(list(set(p['_year'] for p in d_p)), reverse=True)
     cards = []
+    manifests = {}
     for y in years:
         y_p = [p for p in d_p if p['_year'] == y]
-        cards.append({'id': f"y_{y}", 'title': y, 'subtitle': f"{len(y_p)} items", 'url': f"/timeline/year/{y}", 'heroes': y_p[:16], 'tags': []})
+        all_tags = []
+        for p in y_p: all_tags.extend(p['_tags_list'])
+        m_key = f"y_{y}"
+        cards.append({'id': m_key, 'manifest_key': m_key, 'title': y, 'subtitle': f"{len(y_p)} items", 'url': f"/timeline/year/{y}", 'heroes': y_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
+        manifests[m_key] = build_manifest(y_p)
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=decade, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="<a href='/timeline'>Timeline</a> / " + decade, view_type="grid", cards=cards, manifests={c['id']: build_manifest(c['heroes']) for c in cards})
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=decade, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="<a href='/timeline'>Timeline</a> / " + decade, view_type="grid", cards=cards, manifests=manifests)
 
 @app.route('/timeline/year/<year>')
 def timeline_year(year):
@@ -390,26 +396,30 @@ def explorer(sub=""):
     if not sub:
         roots = sorted(list(set(p['rel_fqn'].split(os.sep)[0] for p in DB_CACHE)))
         cards = []
+        manifests = {}
         for r in roots:
             p_list = [p for p in DB_CACHE if p['rel_fqn'].startswith(r + os.sep)]
-            cards.append({'id': f"r_{r}", 'title': r, 'subtitle': "Root", 'url': f"/folder/{r}", 'heroes': p_list[:16], 'tags': []})
+            m_key = f"r_{r}"
+            cards.append({'id': m_key, 'manifest_key': m_key, 'title': r, 'subtitle': "Root", 'url': f"/folder/{r}", 'heroes': p_list[:16], 'tags': []})
+            manifests[m_key] = build_manifest(p_list)
         for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Explorer", active_tab="file", banner_img="hero-folder.png", breadcrumb="Root", view_type="grid", cards=cards, manifests={c['id']: build_manifest(c['heroes']) for c in cards})
+        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Explorer", active_tab="file", banner_img="hero-folder.png", breadcrumb="Root", view_type="grid", cards=cards, manifests=manifests)
     
     folder_photos = [p for p in DB_CACHE if p['rel_fqn'].replace(os.sep, '/').startswith(sub + '/')]
     subdirs = sorted(list(set(p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:].split('/')[0] for p in folder_photos if '/' in p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:])))
     exact_files = [p for p in folder_photos if '/' not in p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:]]
     cards = []
+    manifests = {}
     for d in subdirs:
         d_p = [p for p in folder_photos if p['rel_fqn'].replace(os.sep, '/').startswith(f"{sub}/{d}/")]
-        # Combine folder-specific tags
         all_tags = []
         for p in d_p: all_tags.extend(p['_tags_list'])
-        cards.append({'id': f"d_{d}", 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/folder/{sub}/{d}", 'heroes': d_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
+        m_key = f"d_{d}"
+        cards.append({'id': m_key, 'manifest_key': m_key, 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/folder/{sub}/{d}", 'heroes': d_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
+        manifests[m_key] = build_manifest(d_p)
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    bc = f"<a href='/folder'>Root</a> / {sub.replace('/', ' / ')}"
-    manifests = {c['id']: build_manifest(c['heroes']) for c in cards}
     if exact_files: manifests['main_gallery'] = build_manifest(exact_files)
+    bc = f"<a href='/folder'>Root</a> / {sub.replace('/', ' / ')}"
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=sub.split('/')[-1], active_tab="file", banner_img="hero-folder.png", breadcrumb=bc, view_type="grid" if cards else "photos", cards=cards, photos=exact_files, manifests=manifests)
 
 @app.route('/tags')
@@ -417,9 +427,10 @@ def explorer(sub=""):
 def tags(tag_name=None):
     load_cache()
     if not tag_name:
-        cards = [{'id': f"t_{t}", 'title': f"#{t}", 'subtitle': f"{len(p)} items", 'url': f"/tags/{t}", 'heroes': p[:16], 'tags': []} for t, p in sorted(GLOBAL_TAGS.items())]
+        cards = [{'id': f"t_{t}", 'manifest_key': f"t_{t}", 'title': f"#{t}", 'subtitle': f"{len(p)} items", 'url': f"/tags/{t}", 'heroes': p[:16], 'tags': []} for t, p in sorted(GLOBAL_TAGS.items())]
+        manifests = {c['id']: build_manifest(GLOBAL_TAGS[c['title'][1:]]) for c in cards}
         for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="Tags", view_type="grid", cards=cards, manifests={c['id']: build_manifest(c['heroes']) for c in cards})
+        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="Tags", view_type="grid", cards=cards, manifests=manifests)
     p = GLOBAL_TAGS.get(tag_name, [])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"#{tag_name}", active_tab="tags", banner_img="hero-tags.png", breadcrumb="<a href='/tags'>Tags</a> / " + tag_name, view_type="photos", photos=p, manifests={'main_gallery': build_manifest(p)})
 
