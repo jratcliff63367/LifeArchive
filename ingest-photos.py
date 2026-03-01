@@ -2,24 +2,27 @@ import os
 import shutil
 import sqlite3
 import hashlib
+import time
 from datetime import datetime
 from PIL import Image
 
-# --- CONFIGURATION ---
-SOURCES = [r"C:\test-undated", r"C:\test-images"]
+# --- CONFIGURATION (EDIT THESE FOR THE FULL RUN) ---
+# Add all your high-volume source folders here
+SOURCES = [r"C:\test-undated", r"C:\test-images"] 
 DEST_ROOT = r"C:\website-test"
+
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
+LOG_INTERVAL = 100  # Only update the console every 100 files
 
 # Ensure environment is ready
 os.makedirs(THUMB_DIR, exist_ok=True)
 
 ### ---------------------------------------------------------------------------
-### LAYER: IO_ENGINE (File Handling & Hashing)
+### LAYER: IO_ENGINE
 ### ---------------------------------------------------------------------------
 
 def get_sha1(file_path):
-    """Generates unique ID for deduplication and thumbnails."""
     h = hashlib.sha1()
     with open(file_path, 'rb') as f:
         while chunk := f.read(8192):
@@ -27,23 +30,27 @@ def get_sha1(file_path):
     return h.hexdigest()
 
 def create_thumbnail(src_path, sha1):
-    """Generates the 400px thumb used by the UI and 4x4 composites."""
     t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
     if os.path.exists(t_path): return
     try:
         with Image.open(src_path) as img:
             img.thumbnail((400, 400))
             img.convert("RGB").save(t_path, "JPEG", quality=85)
-    except Exception as e:
-        print(f"  [!] Thumb Error: {e}")
+    except: pass # Skip bad files silently during massive runs
 
 ### ---------------------------------------------------------------------------
-### LAYER: DATA_PERSISTENCE (Metadata & Date Logic)
+### LAYER: DATA_PERSISTENCE
 ### ---------------------------------------------------------------------------
 
 def init_db():
-    """Wipes and recreates the index for a clean test-bench run."""
+    """Nukes the existing DB and cache for a clean stress-test foundation."""
     if os.path.exists(DB_PATH): os.remove(DB_PATH)
+    # Also nuke the composite cache folder to fix the 'whack' thumbnails
+    comp_dir = os.path.join(THUMB_DIR, "_composites")
+    if os.path.isdir(comp_dir):
+        shutil.rmtree(comp_dir)
+        os.makedirs(comp_dir, exist_ok=True)
+        
     conn = sqlite3.connect(DB_PATH)
     conn.execute('''CREATE TABLE media (
         sha1 TEXT PRIMARY KEY, rel_fqn TEXT, original_filename TEXT, 
@@ -53,17 +60,9 @@ def init_db():
     conn.close()
 
 def parse_date(file_path):
-    """
-    STRICT INTERFACE: 
-    1. If filename contains 'OBI_', return '0000-00-00 00:00:00'.
-    2. Else, try EXIF.
-    3. Fallback to File Creation.
-    """
     fname = os.path.basename(file_path)
     if "OBI_" in fname:
         return "0000-00-00 00:00:00", "Undated Fallback"
-    
-    # Try EXIF
     try:
         with Image.open(file_path) as img:
             exif = img._getexif()
@@ -71,28 +70,30 @@ def parse_date(file_path):
                 dt = datetime.strptime(exif[36867], '%Y:%m:%d %H:%M:%S')
                 return dt.strftime('%Y-%m-%d %H:%M:%S'), "EXIF"
     except: pass
-    
-    # Fallback
     mtime = os.path.getmtime(file_path)
     dt = datetime.fromtimestamp(mtime)
     return dt.strftime('%Y-%m-%d %H:%M:%S'), "File Creation"
 
 ### ---------------------------------------------------------------------------
-### LAYER: WORKFLOW_CONTROLLER (The 'Copy & Index' Loop)
+### LAYER: WORKFLOW_CONTROLLER
 ### ---------------------------------------------------------------------------
 
 def run_ingest():
     init_db()
     conn = sqlite3.connect(DB_PATH)
     
-    print(f"--- STARTING GOLDEN INGEST (V3.0) ---")
+    start_time = time.time()
+    total_files = 0
+    
+    print(f"--- STARTING MASSIVE INGEST (V3.1) ---")
+    print(f"Destination: {DEST_ROOT}")
     
     for src in SOURCES:
         if not os.path.exists(src):
             print(f"Skipping missing source: {src}")
             continue
             
-        print(f"Processing Source: {src}")
+        print(f"\nScanning: {src}")
         
         for root, _, files in os.walk(src):
             for f in files:
@@ -101,7 +102,6 @@ def run_ingest():
                 src_path = os.path.join(root, f)
                 sha1 = get_sha1(src_path)
                 
-                # Determine Destination Path (maintain relative folder structure)
                 rel_dir = os.path.relpath(root, src)
                 dest_dir = os.path.join(DEST_ROOT, os.path.basename(src), rel_dir)
                 os.makedirs(dest_dir, exist_ok=True)
@@ -110,24 +110,32 @@ def run_ingest():
                 # PHYSICAL COPY
                 shutil.copy2(src_path, dest_path)
                 
-                # METADATA
+                # METADATA & THUMB
                 final_dt, source_label = parse_date(dest_path)
                 rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
                 path_tags = rel_dir.replace(os.sep, ',')
                 
-                # INDEX
                 conn.execute("""INSERT OR REPLACE INTO media 
                     (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source) 
                     VALUES (?, ?, ?, ?, ?, ?)""", 
                     (sha1, rel_fqn, f, path_tags, final_dt, source_label))
                 
-                # THUMBNAIL
                 create_thumbnail(dest_path, sha1)
-                print(f"  [+] Indexed: {f} ({source_label})")
+                
+                total_files += 1
+                if total_files % LOG_INTERVAL == 0:
+                    elapsed = time.time() - start_time
+                    rate = total_files / elapsed if elapsed > 0 else 0
+                    print(f"\r  [Progress] Processed {total_files} files... ({rate:.1f} files/sec)", end="", flush=True)
 
     conn.commit()
     conn.close()
-    print(f"--- INGEST COMPLETE. Database created at {DB_PATH} ---")
+    
+    duration = time.time() - start_time
+    print(f"\n\n--- INGEST COMPLETE ---")
+    print(f"Total Files Indexed: {total_files}")
+    print(f"Total Duration: {duration/60:.2f} minutes")
+    print(f"Final DB Size: {os.path.getsize(DB_PATH)/1024/1024:.2f} MB")
 
 if __name__ == "__main__":
     run_ingest()
