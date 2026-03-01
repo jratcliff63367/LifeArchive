@@ -1,10 +1,9 @@
 import os
 import sqlite3
-import json
-import logging
 import hashlib
 from collections import defaultdict
-from flask import Flask, request, render_template_string, send_from_directory, jsonify
+from flask import Flask, request, render_template_string, send_from_directory, send_file, jsonify
+from urllib.parse import unquote
 from PIL import Image
 
 # --- CONFIGURATION ---
@@ -13,427 +12,242 @@ DB_PATH = os.path.join(ARCHIVE_ROOT, "archive_index.db")
 ASSETS_DIR = os.path.join(ARCHIVE_ROOT, "_web_layout", "assets")
 THUMB_DIR = os.path.join(ARCHIVE_ROOT, "_thumbs")
 COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
-
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
-THEME_COLOR = "#bb86fc"
 
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+THEME_COLOR = "#bb86fc"
 
 app = Flask(__name__)
 
-# --- GLOBAL STATE ---
-DB_CACHE = []
-GLOBAL_TAGS = defaultdict(list)
+### ---------------------------------------------------------------------------
+### LAYER: DATA_PERSISTENCE
+### ---------------------------------------------------------------------------
+
+DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
 
 def load_cache():
-    global DB_CACHE, GLOBAL_TAGS
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC")
-        rows = cursor.fetchall()
-        DB_CACHE = []
-        GLOBAL_TAGS.clear()
-        for row in rows:
-            dt_str = row['final_dt'][:10]
-            yyyy = dt_str[:4]
-            decade = yyyy[:3] + "0s"
-            item = dict(row)
-            item.update({'_year': yyyy, '_decade': decade})
-            
-            tags = []
-            if row['path_tags']: tags.extend([t.strip() for t in row['path_tags'].split(',')])
-            if row['custom_tags']: tags.extend([t.strip() for t in row['custom_tags'].split(',')])
-            item['_tags_list'] = sorted(list(set([t.title() for t in tags if t])))
-            
+    global DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS
+    if not os.path.exists(DB_PATH): return
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC").fetchall()
+    DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
+    for row in rows:
+        item = dict(row)
+        dt = str(item['final_dt'])
+        item['_web_path'] = item['rel_fqn'].replace('\\', '/')
+        tags = [t.strip().title() for t in f"{item['path_tags'] or ''},{item['custom_tags'] or ''}".split(',') if t.strip()]
+        item['_tags_list'] = sorted(list(set(tags)))
+        if dt.startswith("0000"):
+            parts = item['_web_path'].split('/')
+            item['_folder_group'] = parts[-2] if len(parts) > 1 else "Root"
+            UNDATED_CACHE.append(item)
+        else:
+            item.update({'_year': dt[:4], '_decade': dt[:3]+"0s"})
             DB_CACHE.append(item)
-            for t in item['_tags_list']: GLOBAL_TAGS[t].append(item)
-    except Exception as e: print(f"Cache Error: {e}")
-    finally: conn.close()
-
-def generate_thumbnail(source_path, sha1):
-    try:
-        dest_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
-        with Image.open(source_path) as img:
-            img.thumbnail((400, 400), Image.Resampling.LANCZOS)
-            img.convert("RGB").save(dest_path, "JPEG", quality=85)
-        return True
-    except: return False
+        for t in item['_tags_list']: GLOBAL_TAGS[t].append(item)
+    conn.close()
 
 def get_composite_hash(heroes):
     if not heroes: return None
-    sha1_list = [h['sha1'] for h in heroes[:16]]
-    comp_hash = hashlib.md5("".join(sha1_list).encode('utf-8')).hexdigest()
-    comp_path = os.path.join(COMPOSITE_DIR, f"{comp_hash}.jpg")
-    if os.path.exists(comp_path): return comp_hash
-    
-    canvas = Image.new('RGB', (400, 400), color=(17, 17, 17))
-    for i, sha1 in enumerate(sha1_list):
-        t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
-        if os.path.exists(t_path):
+    sha1s = [h['sha1'] for h in heroes[:16]]
+    h_hash = hashlib.md5("".join(sha1s).encode()).hexdigest()
+    cp = os.path.join(COMPOSITE_DIR, f"{h_hash}.jpg")
+    if os.path.exists(cp): return h_hash
+    canvas = Image.new('RGB', (400, 400), (13, 13, 13))
+    for i, h in enumerate(heroes[:16]):
+        tp = os.path.join(THUMB_DIR, f"{h['sha1']}.jpg")
+        if os.path.exists(tp):
             try:
-                with Image.open(t_path) as img:
-                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
-                    w, h = img.size
-                    canvas.paste(img, ((i%4)*100+(100-w)//2, (i//4)*100+(100-h)//2))
-            except: pass
-    canvas.save(comp_path, "JPEG", quality=85)
-    return comp_hash
+                with Image.open(tp) as img:
+                    img.thumbnail((100, 100)); canvas.paste(img, ((i % 4) * 100, (i // 4) * 100))
+            except: continue
+    canvas.save(cp, "JPEG", quality=80); return h_hash
 
 def build_manifest(media_list):
-    return [{
-        'sha1': p['sha1'], 'path': p['rel_fqn'], 'filename': p['original_filename'],
-        'date': p['final_dt'], 'type': p['media_type'],
-        'custom_notes': p['custom_notes'], 'custom_tags': p['custom_tags']
-    } for p in media_list]
+    return [{'sha1': p['sha1'], 'path': p['_web_path'], 'filename': p['original_filename']} for p in media_list]
 
-# --- HTML TEMPLATE ---
+### ---------------------------------------------------------------------------
+### LAYER: VIEW_CONTROLLER
+### ---------------------------------------------------------------------------
+
 HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>{{ page_title }} | Legacy Archive</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap" rel="stylesheet">
-    <style>
-        :root { --accent: {{ theme_color }}; --bg: #0d0d0d; --card-bg: #1a1a1a; --select: #4285f4; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: #fff; margin: 0; padding: 0; overflow-x: hidden; }
-        
-        #selection-bar { position: fixed; top: -100px; left: 0; right: 0; height: 70px; background: #1a1a1a; border-bottom: 2px solid var(--select); z-index: 10005; display: flex; align-items: center; padding: 0 40px; transition: 0.3s; }
-        #selection-bar.active { top: 0; }
-        .bar-btn { background: #333; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; margin-left: 15px; cursor: pointer; font-weight: 700; }
-        
-        .hero-banner { width: 100%; height: 250px; background: #111; background-image: linear-gradient(to bottom, rgba(13,13,13,0) 60%, rgba(13,13,13,1) 100%), url('/assets/{{ banner_img }}'); background-size: cover; background-position: center; border-bottom: 1px solid #333; }
-        .nav-bar { background: rgba(10,10,10,0.9); backdrop-filter: blur(15px); padding: 15px 40px; border-bottom: 1px solid #333; display: flex; gap: 40px; position: sticky; top: 0; z-index: 1000; }
-        .nav-bar a { color: #888; text-decoration: none; font-weight: 700; font-size: 0.85em; letter-spacing: 1px; text-transform: uppercase; }
-        .nav-bar a.active { color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
-        
-        .content { padding: 40px; max-width: 1600px; margin: 0 auto; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 30px; }
-        .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
-        .card { background: var(--card-bg); border-radius: 12px; border: 1px solid #333; overflow: hidden; position: relative; transition: 0.2s; display: flex; flex-direction: column; }
-        .card:hover { border-color: var(--accent); }
-        .hero-preview { width: 100%; aspect-ratio: 1/1; background: #000; cursor: pointer; }
-        .hero-preview img { width: 100%; height: 100%; object-fit: cover; }
-        
-        .select-dot { position: absolute; top: 12px; left: 12px; width: 24px; height: 24px; background: rgba(0,0,0,0.4); border: 2px solid #fff; border-radius: 50%; z-index: 100; cursor: pointer; display: none; align-items: center; justify-content: center; }
-        .card:hover .select-dot, .card.selected .select-dot { display: flex; }
-        .card.selected .select-dot { background: var(--select); border-color: var(--select); color: #fff; }
-        .card.selected { border: 3px solid var(--select); }
-
-        .tag-pill { display: inline-block; background: #333; color: #aaa; padding: 4px 10px; border-radius: 4px; font-size: 0.75em; font-weight: 800; margin-right: 5px; margin-top: 5px; text-decoration: none; }
-        .tag-pill:hover { background: var(--accent); color: #000; }
-
-        #context-menu { display: none; position: fixed; background: #222; border: 1px solid #444; z-index: 99999; width: 240px; border-radius: 8px; overflow: hidden; }
-        .menu-item { padding: 12px 20px; cursor: pointer; font-size: 14px; color: #eee; }
-        .menu-item:hover { background: var(--accent); color: #000; }
-
-        #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.98); z-index: 9999; align-items: center; justify-content: center; }
-        #lightbox.active { display: flex; }
-        #lb-img { max-width: 90%; max-height: 85vh; object-fit: contain; }
-        .close-btn { position: absolute; top: 20px; right: 30px; font-size: 40px; cursor: pointer; color: #888; }
-        .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); background: none; border: none; color: #fff; font-size: 5em; cursor: pointer; opacity: 0.2; transition: 0.2s; z-index: 10000; }
-        .lb-nav:hover { opacity: 1; color: var(--accent); }
-        .info-trigger { position: absolute; bottom: 30px; right: 30px; background: #222; padding: 12px 24px; border-radius: 40px; cursor: pointer; font-weight: 800; border: 1px solid #444; z-index: 10005; }
-        #lb-sidebar { position: absolute; top: 0; right: -450px; width: 450px; bottom: 0; background: rgba(15,15,15,0.98); border-left: 1px solid #333; padding: 40px 30px; z-index: 10001; transition: 0.3s; display: flex; flex-direction: column; box-sizing: border-box; overflow-y: auto; }
-        #lb-sidebar.visible { right: 0; }
-        .meta-label { color: var(--accent); font-weight: 900; text-transform: uppercase; font-size: 0.75em; letter-spacing: 2px; display: block; margin-top: 15px; }
-        textarea, input { width: 100%; background: #222; border: 1px solid #444; color: #fff; padding: 10px; margin-top: 5px; border-radius: 4px; box-sizing: border-box; font-family: inherit; }
-        .action-btn { background: var(--accent); color: #000; border: none; padding: 12px; border-radius: 6px; font-weight: bold; width: 100%; margin-top: 10px; cursor: pointer; text-transform: uppercase; }
-    </style>
-</head>
-<body>
-
-<div id="selection-bar">
-    <div id="selection-count" style="font-weight:900; font-size:1.2em;">0 selected</div>
-    <div style="flex-grow:1;"></div>
-    <button class="bar-btn" onclick="bulkRotate(90)">Rotate 90° ↻</button>
-    <button class="bar-btn" style="background:#cf6679;" onclick="bulkDelete()">Hide</button>
-    <button class="bar-btn" onclick="clearSelection()">Cancel</button>
-</div>
-
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{{page_title}} | Archive</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+    :root { --accent: {{ theme_color }}; --bg: #0d0d0d; --card-bg: #1a1a1a; }
+    body { font-family: 'Inter', sans-serif; background: var(--bg); color: #fff; margin: 0; overflow-x: hidden; }
+    .nav-bar { background: rgba(10,10,10,0.9); backdrop-filter: blur(15px); padding: 15px 40px; border-bottom: 1px solid #333; display: flex; gap: 30px; position: sticky; top: 0; z-index: 1000; }
+    .nav-bar a { color: #888; text-decoration: none; font-weight: 700; font-size: 0.8em; text-transform: uppercase; letter-spacing: 1px; }
+    .nav-bar a.active { color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 5px; }
+    .hero-banner { height: 200px; width: 100%; overflow: hidden; position: relative; border-bottom: 1px solid #333; }
+    .hero-banner img { width: 100%; height: 100%; object-fit: cover; opacity: 0.4; }
+    .content { padding: 40px; max-width: 1600px; margin: 0 auto; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 30px; }
+    .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .card { background: var(--card-bg); border-radius: 12px; border: 1px solid #333; overflow: hidden; cursor: pointer; transition: 0.2s; position: relative; }
+    .card:hover { border-color: var(--accent); transform: translateY(-5px); }
+    .hero-preview { width: 100%; aspect-ratio: 1/1; background: #000; overflow: hidden; }
+    .hero-preview img { width: 100%; height: 100%; object-fit: cover; }
+    .breadcrumb { font-weight: 800; color: #666; margin-bottom: 30px; text-transform: uppercase; font-size: 0.8em; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.98); z-index: 9999; align-items: center; justify-content: center; user-select: none; }
+    #lightbox.active { display: flex; }
+    #lb-img { max-width: 85%; max-height: 85vh; object-fit: contain; box-shadow: 0 0 80px rgba(0,0,0,0.8); }
+    .lb-nav { position: absolute; top: 0; bottom: 0; width: 12%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.3s; font-size: 3em; color: rgba(255,255,255,0.1); z-index: 10002; }
+    .lb-nav:hover { background: rgba(255,255,255,0.05); color: var(--accent); }
+    #lb-prev { left: 0; }
+    #lb-next { right: 0; }
+    #lb-sidebar { position: fixed; top: 0; right: -450px; width: 400px; height: 100vh; background: #111; border-left: 1px solid #333; padding: 60px 30px; transition: 0.4s cubic-bezier(0.16, 1, 0.3, 1); z-index: 10005; box-shadow: -20px 0 50px rgba(0,0,0,0.5); overflow-y: auto; }
+    #lb-sidebar.visible { right: 0; }
+    #context-menu { display: none; position: fixed; background: #222; border: 1px solid #444; z-index: 100000; width: 220px; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    .menu-item { padding: 12px 20px; cursor: pointer; font-size: 0.9em; font-weight: 700; transition: 0.1s; }
+    .menu-item:hover { background: var(--accent); color: #000; }
+</style>
+</head><body>
 <div id="context-menu">
-    <div class="menu-item" onclick="rotateImage(90)">Rotate Clockwise 90°</div>
-    <div class="menu-item" onclick="rotateImage(-90)">Rotate Counter-Clockwise 90°</div>
+    <div class="menu-item" onclick="rotateImage(90)">Rotate 90° Clockwise ↻</div>
+    <div class="menu-item" onclick="rotateImage(270)">Rotate 90° Counter ↺</div>
+    <div class="menu-item" style="color:#ff5555; border-top:1px solid #444;">Mark for Deletion</div>
 </div>
-
-<div class="hero-banner"></div>
 <div class="nav-bar">
-    <a href="/timeline" class="{{ 'active' if active_tab=='timeline' else '' }}">Timeline</a>
-    <a href="/folder" class="{{ 'active' if active_tab=='file' else '' }}">File View</a>
-    <a href="/tags" class="{{ 'active' if active_tab=='tags' else '' }}">Master Tags</a>
+    <a href="/timeline" class="{{'active' if active_tab=='timeline'}}">Timeline</a>
+    <a href="/undated" class="{{'active' if active_tab=='undated'}}">Undated</a>
+    <a href="/folder" class="{{'active' if active_tab=='file'}}">Explorer</a>
+    <a href="/tags" class="{{'active' if active_tab=='tags'}}">Tags</a>
 </div>
-
+<div class="hero-banner"><img src="/assets/{{ banner_img }}" onerror="this.src='/assets/hero-timeline.png'"></div>
 <div class="content">
-    <h1>{{ page_title }}</h1>
-    <div class="breadcrumb">{{ breadcrumb | safe }}</div>
-    
-    {% if view_type == 'grid' %}
-        <div class="grid">
-            {% for card in cards %}
-            <div class="card" id="card-{{ card.id }}">
-                <div class="hero-preview" onclick="handleGridClick(event, '{{ card.manifest_key | replace(\"'\", \"\\\\'\") }}')">
-                    {% if card.comp_hash %}
-                        <img src="/composite/{{ card.comp_hash }}.jpg" loading="lazy">
-                    {% else %}<div style="width:100%; height:100%; background:#111;"></div>{% endif %}
-                </div>
-                <div style="padding:15px;">
-                    <a href="{{ card.url }}" style="text-decoration:none;"><div style="font-weight:900; color:#fff; font-size:1.4em;">{{ card.title }}</div></a>
-                    <div style="color:#666; font-size:0.85em; font-weight:700;">{{ card.subtitle }}</div>
-                    <div style="margin-top:5px;">
-                        {% for tag in card.tags %}
-                            <a href="/tags/{{ tag }}" class="tag-pill">#{{ tag }}</a>
-                        {% endfor %}
-                    </div>
-                </div>
+    <h1>{{ page_title }}</h1><div class="breadcrumb">{{ breadcrumb | safe }}</div>
+    {% if cards %}<div class="grid" style="margin-bottom: 50px;">
+        {% for c in cards %}<div class="card" onclick="handleGridClick(event, '{{c.id}}')">
+            <div class="hero-preview">{% if c.comp_hash %}<img src="/composite/{{c.comp_hash}}.jpg" loading="lazy">{% endif %}</div>
+            <div style="padding:20px;"><a href="{{ c.url }}" style="text-decoration:none; color:#fff;"><h3 style="margin:0;">{{ c.title }}</h3></a>
+            <div style="color:#666; font-size:0.85em; font-weight:700;">{{ c.subtitle }}</div></div>
+        </div>{% endfor %}
+    </div>{% endif %}
+    {% if photos %}<div class="photo-grid">
+        {% for p in photos %}<div class="card" oncontextmenu="handleCtx(event, '{{p.sha1}}')">
+            <div class="hero-preview" onclick="openLB({{loop.index0}}, 'main_gallery')">
+                <img id="thumb-{{p.sha1}}" src="/thumbs/{{p.sha1}}.jpg" loading="lazy">
             </div>
-            {% endfor %}
-        </div>
-    {% elif view_type == 'photos' %}
-        <div class="photo-grid">
-            {% for p in photos %}
-            <div class="card photo-card" id="card-{{ p.sha1 }}" data-sha1="{{ p.sha1 }}" data-idx="{{ loop.index0 }}">
-                <div class="select-dot" onclick="toggleSelection(event, '{{ p.sha1 }}')">✓</div>
-                <div class="hero-preview" onclick="handlePhotoClick(event, {{ loop.index0 }})" oncontextmenu="handlePhotoContext(event, '{{ p.sha1 }}')">
-                    <img id="img-{{ p.sha1 }}" src="/thumbs/{{ p.sha1 }}.jpg" loading="lazy">
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-    {% endif %}
+        </div>{% endfor %}
+    </div>{% endif %}
 </div>
-
-<div id="lightbox">
-    <span class="close-btn" onclick="closeLB()">&times;</span>
-    <button class="lb-nav" style="left:20px;" onclick="changeImg(-1)">&#10094;</button>
-    <div id="lb-img-container" oncontextmenu="handlePhotoContext(event, manifests[curManifest][curIdx].sha1)"><img id="lb-img" src=""></div>
-    <button class="lb-nav" style="right:20px;" onclick="changeImg(1)">&#10095;</button>
-    <div class="info-trigger" onclick="toggleInfo()">CURATE (E)</div>
-    <div id="lb-sidebar">
-        <h2 style="margin:0;">Curation</h2>
-        <span class="meta-label">File</span><div id="meta-file" style="font-size:0.8em; color:#888;"></div>
-        <button class="action-btn" onclick="rotateImage(90, true)">Rotate 90° ↻</button>
-        <span class="meta-label">Notes</span><textarea id="input-notes"></textarea>
-        <span class="meta-label">Tags</span><input type="text" id="input-tags">
-        <button class="action-btn" onclick="saveMetadata()">Save Changes</button>
+<div id="lightbox" onclick="if(event.target===this) closeLB()">
+    <div id="lb-prev" class="lb-nav" onclick="changeImg(-1)">&#10094;</div>
+    <img id="lb-img" src="" oncontextmenu="handleCtxFromLightbox(event)">
+    <div id="lb-next" class="lb-nav" onclick="changeImg(1)">&#10095;</div>
+    <div style="position:absolute; bottom:30px; right:30px; background:#222; padding:12px 24px; border-radius:40px; cursor:pointer; font-weight:800; z-index:10006; border:1px solid #444; color:var(--accent);" onclick="toggleSidebar()">CURATE (E)</div>
+    <div id="lb-sidebar" onclick="event.stopPropagation()">
+        <h2 style="margin:0; color:var(--accent);">Curation</h2>
+        <div id="meta-file" style="color:#888; font-size:0.8em; margin-top:20px; word-break:break-all; font-weight:700;"></div>
+        <hr style="border:0; border-top:1px solid #333; margin:30px 0;">
+        <label style="font-size:0.7em; color:#666; font-weight:900; letter-spacing:1px;">NOTES</label>
+        <textarea id="input-notes" style="width:100%; background:#222; border:1px solid #444; color:#fff; padding:15px; margin-top:10px; border-radius:8px; font-family:inherit; resize: none;" rows="8" placeholder="Add custom notes..."></textarea>
     </div>
 </div>
-
 <script>
     const manifests = {{ manifests | tojson | safe }};
-    let curManifest = null, curIdx = 0, menuSha1 = '', selectedSet = new Set(), lastSelectedIndex = -1, infoOpen = false;
-
-    function handleGridClick(event, mKey) {
-        const rect = event.target.getBoundingClientRect();
-        const clickedIdx = (Math.floor((event.clientY - rect.top) / (rect.height / 4)) * 4) + Math.floor((event.clientX - rect.left) / (rect.width / 4));
-        openLB(clickedIdx, mKey);
-    }
-
-    function toggleSelection(e, sha1) {
-        e.stopPropagation();
-        if (selectedSet.has(sha1)) selectedSet.delete(sha1); else selectedSet.add(sha1);
-        lastSelectedIndex = parseInt(document.getElementById('card-' + sha1).dataset.idx);
-        renderSelection();
-    }
-
-    function handlePhotoClick(e, idx) {
-        if (e.shiftKey && lastSelectedIndex !== -1) {
-            const start = Math.min(lastSelectedIndex, idx), end = Math.max(lastSelectedIndex, idx);
-            const cards = document.querySelectorAll('.photo-card');
-            for (let i = start; i <= end; i++) selectedSet.add(cards[i].dataset.sha1);
-            renderSelection();
-        } else { openLB(idx, 'main_gallery'); }
-    }
-
-    function renderSelection() {
-        document.querySelectorAll('.photo-card').forEach(c => c.classList.toggle('selected', selectedSet.has(c.dataset.sha1)));
-        document.getElementById('selection-bar').classList.toggle('active', selectedSet.size > 0);
-        document.getElementById('selection-count').innerText = selectedSet.size + " selected";
-    }
-    function clearSelection() { selectedSet.clear(); lastSelectedIndex = -1; renderSelection(); }
-
-    function rotateImage(deg, fromLB = false) {
-        const sha1 = fromLB ? manifests[curManifest][curIdx].sha1 : menuSha1;
-        fetch('/api/rotate/' + sha1, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({degrees:deg})})
-        .then(() => {
-            const ts = new Date().getTime();
-            if (fromLB) document.getElementById('lb-img').src = document.getElementById('lb-img').src.split('?')[0] + '?t=' + ts;
-            const thumb = document.getElementById('img-' + sha1); if (thumb) thumb.src = thumb.src.split('?')[0] + '?t=' + ts;
-        });
-    }
-
-    function bulkRotate(deg) {
-        const list = Array.from(selectedSet);
-        Promise.all(list.map(s => fetch('/api/rotate/' + s, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({degrees:deg})}))).then(() => location.reload());
-    }
-
-    function openLB(idx, mKey) { 
-        curManifest = mKey; 
-        curIdx = Math.min(idx, manifests[mKey].length - 1); 
-        updateLB(); 
-        document.getElementById('lightbox').classList.add('active'); 
-    }
-    
-    function updateLB() {
-        const item = manifests[curManifest][curIdx];
-        document.getElementById('lb-img').src = "/media/" + encodeURIComponent(item.path);
-        document.getElementById('meta-file').innerText = item.filename;
-        document.getElementById('input-notes').value = item.custom_notes || '';
-        document.getElementById('input-tags').value = item.custom_tags || '';
-    }
-    
-    function changeImg(n) { curIdx = (curIdx + n + manifests[curManifest].length) % manifests[curManifest].length; updateLB(); }
-    function closeLB() { document.getElementById('lightbox').classList.remove('active'); document.getElementById('lb-sidebar').classList.remove('visible'); infoOpen = false; }
-    function toggleInfo() { infoOpen = !infoOpen; document.getElementById('lb-sidebar').classList.toggle('visible', infoOpen); }
-
-    function handlePhotoContext(e, sha1) { e.preventDefault(); menuSha1 = sha1; const m = document.getElementById('context-menu'); m.style.display = 'block'; m.style.left = e.clientX + 'px'; m.style.top = e.clientY + 'px'; }
-    window.onclick = () => { document.getElementById('context-menu').style.display = 'none'; }
-    
-    document.onkeydown = e => {
-        if(!document.getElementById('lightbox').classList.contains('active')) return;
-        if(e.target.tagName==='INPUT' || e.target.tagName==='TEXTAREA') return;
-        if(e.key==="ArrowRight") changeImg(1); if(e.key==="ArrowLeft") changeImg(-1);
-        if(e.key==="Escape") closeLB(); if(e.key.toLowerCase()==="e") toggleInfo();
-    };
-    
-    function saveMetadata() {
-        const item = manifests[curManifest][curIdx];
-        fetch('/api/update_metadata/' + item.sha1, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({custom_notes: document.getElementById('input-notes').value, custom_tags: document.getElementById('input-tags').value})}).then(() => {
-            item.custom_notes = document.getElementById('input-notes').value;
-            item.custom_tags = document.getElementById('input-tags').value;
-            alert("Metadata saved locally for session");
-        });
-    }
-</script>
-</body>
-</html>
+    let curM = null, curI = 0, menuSha1 = '';
+    function handleGridClick(e, k) { if (e.target.closest('a')) return; const rect = e.currentTarget.getBoundingClientRect(); const x = e.clientX - rect.left, y = e.clientY - rect.top; const col = Math.floor(x / (rect.width / 4)), row = Math.floor(y / (rect.height / 4)); openLB((row * 4) + col, k); }
+    function openLB(i, k) { if (!manifests[k]) return; curM = k; curI = Math.min(i, manifests[k].length-1); updateLB(); document.getElementById('lightbox').classList.add('active'); }
+    function updateLB() { const itm = manifests[curM][curI]; const path = itm.path.split('/').map(encodeURIComponent).join('/'); document.getElementById('lb-img').src = "/media/" + path + "?t=" + new Date().getTime(); document.getElementById('meta-file').innerText = itm.filename; }
+    function changeImg(step) { if(!curM) return; curI = (curI + step + manifests[curM].length) % manifests[curM].length; updateLB(); }
+    function toggleSidebar() { document.getElementById('lb-sidebar').classList.toggle('visible'); }
+    function closeLB() { document.getElementById('lightbox').classList.remove('active'); document.getElementById('lb-sidebar').classList.remove('visible'); }
+    function handleCtx(e, s) { e.preventDefault(); menuSha1 = s; const m = document.getElementById('context-menu'); m.style.display='block'; m.style.left=e.clientX+'px'; m.style.top=e.clientY+'px'; }
+    function handleCtxFromLightbox(e) { if(!curM) return; handleCtx(e, manifests[curM][curI].sha1); }
+    function rotateImage(d) { fetch('/api/rotate/'+menuSha1, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({degrees:d})}).then(r => r.json()).then(data => { if(data.status==='ok') { const ts = new Date().getTime(); if(document.getElementById('lightbox').classList.contains('active')) updateLB(); const thumb = document.getElementById('thumb-'+menuSha1); if(thumb) thumb.src = "/thumbs/" + menuSha1 + ".jpg?t=" + ts; } }); }
+    window.onclick = () => document.getElementById('context-menu').style.display='none';
+    document.onkeydown = e => { if(e.key==="Escape") closeLB(); if(document.getElementById('lightbox').classList.contains('active')) { if(e.key==="ArrowRight") changeImg(1); if(e.key==="ArrowLeft") changeImg(-1); } if(e.key.toLowerCase()==="e") toggleSidebar(); };
+</script></body></html>
 """
 
-# --- API ---
-@app.route('/api/rotate/<sha1>', methods=['POST'])
-def rotate_image(sha1):
-    deg = request.json.get('degrees', 90)
-    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM media WHERE sha1 = ?", (sha1,)).fetchone()
-    full_path = os.path.join(ARCHIVE_ROOT, row['rel_fqn'])
-    try:
-        with Image.open(full_path) as img:
-            exif = img.info.get('exif')
-            rotated = img.transpose(Image.ROTATE_270 if deg == 90 else Image.ROTATE_90)
-            rotated.load() 
-        rotated.save(full_path, "JPEG", exif=exif, quality=95)
-        generate_thumbnail(full_path, sha1)
-        for f in os.listdir(COMPOSITE_DIR): os.remove(os.path.join(COMPOSITE_DIR, f))
-        return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
+# --- ROUTES ---
 
-@app.route('/api/update_metadata/<sha1>', methods=['POST'])
-def update_metadata(sha1):
-    data = request.json
-    conn = sqlite3.connect(DB_PATH); conn.execute("UPDATE media SET custom_notes = ?, custom_tags = ? WHERE sha1 = ?", (data['custom_notes'], data['custom_tags'], sha1)); conn.commit(); conn.close()
-    return jsonify({"status": "success"})
-
-# --- FILE SERVING ---
-@app.route('/composite/<comp_hash>.jpg')
-def serve_comp(comp_hash): return send_from_directory(COMPOSITE_DIR, f"{comp_hash}.jpg")
-@app.route('/thumbs/<f>')
-def serve_thumb(f): return send_from_directory(THUMB_DIR, f)
-@app.route('/assets/<path:f>')
-def serve_assets(f): return send_from_directory(ASSETS_DIR, f)
 @app.route('/media/<path:p>')
-def serve_media(p):
-    fp = os.path.join(ARCHIVE_ROOT, p)
-    return send_from_directory(os.path.dirname(fp), os.path.basename(fp))
+def serve_m(p):
+    disk_path = os.path.normpath(os.path.join(ARCHIVE_ROOT, unquote(p).replace('/', os.sep)))
+    if os.path.exists(disk_path): return send_file(disk_path)
+    return "Not Found", 404
 
-# --- NAVIGATION ---
+@app.route('/api/rotate/<sha1>', methods=['POST'])
+def rotate(sha1):
+    degrees = request.json.get('degrees', 90)
+    conn = sqlite3.connect(DB_PATH); row = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone(); conn.close()
+    if not row: return jsonify({"status":"error"}), 404
+    fp = os.path.join(ARCHIVE_ROOT, row[0])
+    try:
+        with Image.open(fp) as img:
+            exif = img.info.get('exif')
+            method = Image.ROTATE_270 if degrees == 90 else Image.ROTATE_90
+            rotated = img.transpose(method); rotated.save(fp, "JPEG", exif=exif, quality=95)
+        with Image.open(fp) as img:
+            img.thumbnail((400,400)); img.convert("RGB").save(os.path.join(THUMB_DIR, f"{sha1}.jpg"), "JPEG")
+        return jsonify({"status":"ok"})
+    except Exception as e: return jsonify({"status":"error", "message": str(e)}), 500
 
 @app.route('/')
 @app.route('/timeline')
 def timeline():
-    load_cache()
-    decades = sorted(list(set(p['_decade'] for p in DB_CACHE)), reverse=True)
-    cards = []
-    manifests = {}
-    for d in decades:
-        d_p = [p for p in DB_CACHE if p['_decade'] == d]
-        all_tags = []
-        for p in d_p: all_tags.extend(p['_tags_list'])
-        m_key = f"d_{d}"
-        cards.append({'id': m_key, 'manifest_key': m_key, 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/timeline/decade/{d}", 'heroes': d_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
-        manifests[m_key] = build_manifest(d_p)
+    load_cache(); decades = sorted(list(set(p['_decade'] for p in DB_CACHE)), reverse=True)
+    cards = [{'id':f"d_{d}", 'title':d, 'subtitle':f"{len([p for p in DB_CACHE if p['_decade']==d])} items", 'url':f"/timeline/decade/{d}", 'heroes':[p for p in DB_CACHE if p['_decade']==d]} for d in decades]
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Timeline", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="Timeline", view_type="grid", cards=cards, manifests=manifests)
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Timeline", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="Decades", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
 
 @app.route('/timeline/decade/<decade>')
 def timeline_decade(decade):
-    load_cache()
-    d_p = [p for p in DB_CACHE if p['_decade'] == decade]
-    years = sorted(list(set(p['_year'] for p in d_p)), reverse=True)
-    cards = []
-    manifests = {}
-    for y in years:
-        y_p = [p for p in d_p if p['_year'] == y]
-        all_tags = []
-        for p in y_p: all_tags.extend(p['_tags_list'])
-        m_key = f"y_{y}"
-        cards.append({'id': m_key, 'manifest_key': m_key, 'title': y, 'subtitle': f"{len(y_p)} items", 'url': f"/timeline/year/{y}", 'heroes': y_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
-        manifests[m_key] = build_manifest(y_p)
+    load_cache(); years = sorted(list(set(p['_year'] for p in DB_CACHE if p['_decade'] == decade)), reverse=True)
+    cards = [{'id':f"y_{y}", 'title':y, 'subtitle':f"{len([p for p in DB_CACHE if p['_year']==y])} items", 'url':f"/timeline/year/{y}", 'heroes':[p for p in DB_CACHE if p['_year']==y]} for y in years]
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=decade, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="<a href='/timeline'>Timeline</a> / " + decade, view_type="grid", cards=cards, manifests=manifests)
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"The {decade}", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / {decade}", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
 
 @app.route('/timeline/year/<year>')
 def timeline_year(year):
-    load_cache()
-    photos = [p for p in DB_CACHE if p['_year'] == year]
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=year, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / {year[:3]}0s / {year}", view_type="photos", photos=photos, manifests={'main_gallery': build_manifest(photos)})
+    load_cache(); imgs = [p for p in DB_CACHE if p['_year'] == year]
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=year, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}", photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
+
+@app.route('/undated')
+def undated():
+    load_cache(); f_map = defaultdict(list)
+    for p in UNDATED_CACHE: f_map[p['_folder_group']].append(p)
+    cards = [{'id':f"u_{f}", 'title':f, 'subtitle':f"{len(imgs)} items", 'url':f"/undated/{f}", 'heroes':imgs} for f, imgs in sorted(f_map.items())]
+    for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Undated Archive", active_tab="undated", banner_img="hero-undated.png", breadcrumb="Undated", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
+
+@app.route('/undated/<folder>')
+def undated_view(folder):
+    load_cache(); imgs = [p for p in UNDATED_CACHE if p['_folder_group'] == folder]
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=folder, active_tab="undated", banner_img="hero-undated.png", breadcrumb="<a href='/undated'>Undated</a> / "+folder, photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
 
 @app.route('/folder')
 @app.route('/folder/<path:sub>')
 def explorer(sub=""):
-    load_cache()
-    if not sub:
-        roots = sorted(list(set(p['rel_fqn'].split(os.sep)[0] for p in DB_CACHE)))
-        cards = []
-        manifests = {}
-        for r in roots:
-            p_list = [p for p in DB_CACHE if p['rel_fqn'].startswith(r + os.sep)]
-            m_key = f"r_{r}"
-            cards.append({'id': m_key, 'manifest_key': m_key, 'title': r, 'subtitle': "Root", 'url': f"/folder/{r}", 'heroes': p_list[:16], 'tags': []})
-            manifests[m_key] = build_manifest(p_list)
-        for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Explorer", active_tab="file", banner_img="hero-folder.png", breadcrumb="Root", view_type="grid", cards=cards, manifests=manifests)
-    
-    folder_photos = [p for p in DB_CACHE if p['rel_fqn'].replace(os.sep, '/').startswith(sub + '/')]
-    subdirs = sorted(list(set(p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:].split('/')[0] for p in folder_photos if '/' in p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:])))
-    exact_files = [p for p in folder_photos if '/' not in p['rel_fqn'].replace(os.sep, '/')[len(sub)+1:]]
-    cards = []
-    manifests = {}
-    for d in subdirs:
-        d_p = [p for p in folder_photos if p['rel_fqn'].replace(os.sep, '/').startswith(f"{sub}/{d}/")]
-        all_tags = []
-        for p in d_p: all_tags.extend(p['_tags_list'])
-        m_key = f"d_{d}"
-        cards.append({'id': m_key, 'manifest_key': m_key, 'title': d, 'subtitle': f"{len(d_p)} items", 'url': f"/folder/{sub}/{d}", 'heroes': d_p[:16], 'tags': sorted(list(set(all_tags)))[:5]})
-        manifests[m_key] = build_manifest(d_p)
+    load_cache(); all_m = DB_CACHE + UNDATED_CACHE; prefix = (sub + "/") if sub else ""; unique_subs, direct_files = set(), []
+    for p in all_m:
+        w_path = p['_web_path']
+        if w_path.startswith(prefix):
+            rem = w_path[len(prefix):]; (unique_subs.add(rem.split('/')[0]) if '/' in rem else direct_files.append(p))
+    cards = [{'id':f"f_{f}", 'title':f, 'subtitle':f"{len([p for p in all_m if p['_web_path'].startswith(prefix+f+'/')])} items", 'url':f"/folder/{prefix+f}", 'heroes':[p for p in all_m if p['_web_path'].startswith(prefix+f+'/')] } for f in sorted(list(unique_subs))]
     for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-    if exact_files: manifests['main_gallery'] = build_manifest(exact_files)
-    bc = f"<a href='/folder'>Root</a> / {sub.replace('/', ' / ')}"
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=sub.split('/')[-1], active_tab="file", banner_img="hero-folder.png", breadcrumb=bc, view_type="grid" if cards else "photos", cards=cards, photos=exact_files, manifests=manifests)
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Explorer", active_tab="file", banner_img="hero-files.png", breadcrumb="Root" if not sub else f"<a href='/folder'>Root</a> / {sub.replace('/', ' / ')}", cards=cards, photos=direct_files, manifests={**{c['id']:build_manifest(c['heroes']) for c in cards}, 'main_gallery':build_manifest(direct_files)})
 
 @app.route('/tags')
-@app.route('/tags/<tag_name>')
-def tags(tag_name=None):
+@app.route('/tags/<tag>')
+def tags(tag=None):
     load_cache()
-    if not tag_name:
-        cards = [{'id': f"t_{t}", 'manifest_key': f"t_{t}", 'title': f"#{t}", 'subtitle': f"{len(p)} items", 'url': f"/tags/{t}", 'heroes': p[:16], 'tags': []} for t, p in sorted(GLOBAL_TAGS.items())]
-        manifests = {c['id']: build_manifest(GLOBAL_TAGS[c['title'][1:]]) for c in cards}
+    if not tag:
+        cards = [{'id':f"t_{t}", 'title':f"#{t}", 'subtitle':f"{len(imgs)} items", 'url':f"/tags/{t}", 'heroes':imgs} for t, imgs in sorted(GLOBAL_TAGS.items())]
         for c in cards: c['comp_hash'] = get_composite_hash(c['heroes'])
-        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="Tags", view_type="grid", cards=cards, manifests=manifests)
-    p = GLOBAL_TAGS.get(tag_name, [])
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"#{tag_name}", active_tab="tags", banner_img="hero-tags.png", breadcrumb="<a href='/tags'>Tags</a> / " + tag_name, view_type="photos", photos=p, manifests={'main_gallery': build_manifest(p)})
+        return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="All Tags", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
+    imgs = GLOBAL_TAGS.get(tag, [])
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"#{tag}", active_tab="tags", banner_img="hero-tags.png", breadcrumb=f"<a href='/tags'>Tags</a> / {tag}", photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
+
+@app.route('/composite/<h>.jpg')
+def serve_c(h): return send_from_directory(COMPOSITE_DIR, f"{h}.jpg")
+@app.route('/thumbs/<f>')
+def serve_t(f): return send_from_directory(THUMB_DIR, f)
+@app.route('/assets/<path:f>')
+def serve_assets(f): return send_from_directory(ASSETS_DIR, f)
 
 if __name__ == '__main__':
-    load_cache()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    load_cache(); app.run(host='0.0.0.0', port=5000, debug=True)
