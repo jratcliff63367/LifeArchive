@@ -3,7 +3,7 @@ import sqlite3
 import hashlib
 import logging
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from flask import Flask, request, render_template_string, send_from_directory, send_file, jsonify
 from urllib.parse import unquote
 from PIL import Image
@@ -24,7 +24,7 @@ os.makedirs(COMPOSITE_DIR, exist_ok=True)
 app = Flask(__name__)
 
 ### ---------------------------------------------------------------------------
-### LAYER: DATA_PERSISTENCE (Tags & Metadata Engine)
+### LAYER: DATA_PERSISTENCE
 ### ---------------------------------------------------------------------------
 
 DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
@@ -34,7 +34,6 @@ def init_db_extensions():
     conn = sqlite3.connect(DB_PATH)
     conn.execute('CREATE TABLE IF NOT EXISTS composite_cache (path_key TEXT PRIMARY KEY, sha1_list TEXT, composite_hash TEXT)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_media_dt ON media(final_dt)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_media_deleted ON media(is_deleted)')
     conn.close()
 
 def load_cache():
@@ -51,7 +50,7 @@ def load_cache():
         dt_str = str(item['final_dt'])
         item['_web_path'] = item['rel_fqn'].replace('\\', '/')
         
-        # Parse Tags
+        # Tag Parsing
         raw_tags = f"{item['path_tags'] or ''},{item['custom_tags'] or ''}"
         item['_tags_list'] = sorted(list(set([t.strip().title() for t in raw_tags.split(',') if t.strip()])))
         
@@ -60,12 +59,25 @@ def load_cache():
             item['_folder_group'] = parts[-2] if len(parts) > 1 else "Root"
             UNDATED_CACHE.append(item)
         else:
-            item.update({'_year': dt_str[:4], '_decade': dt_str[:3]+"0s"})
+            dt_obj = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+            item.update({
+                '_year': dt_str[:4], 
+                '_month': dt_obj.strftime('%m'),
+                '_month_name': dt_obj.strftime('%B'),
+                '_decade': dt_str[:3]+"0s"
+            })
             DB_CACHE.append(item)
             
         for t in item['_tags_list']:
             GLOBAL_TAGS[t].append(item)
     conn.close()
+
+def get_top_tags(items, limit=3):
+    """Aggregates the most frequent tags for a collection of items."""
+    counts = Counter()
+    for itm in items:
+        counts.update(itm.get('_tags_list', []))
+    return [t for t, _ in counts.most_common(limit)]
 
 def get_composite_hash(path_key, media_list):
     if not media_list: return None
@@ -99,7 +111,7 @@ def build_manifest(media_list):
     return [{'sha1': p['sha1'], 'path': p['_web_path'], 'filename': p['original_filename']} for p in media_list]
 
 ### ---------------------------------------------------------------------------
-### LAYER: VIEW_CONTROLLER (Restored UI with Tags)
+### LAYER: VIEW_CONTROLLER
 ### ---------------------------------------------------------------------------
 
 HTML_TEMPLATE = """
@@ -114,6 +126,7 @@ HTML_TEMPLATE = """
     .hero-banner { height: 200px; width: 100%; overflow: hidden; position: relative; border-bottom: 1px solid #333; }
     .hero-banner img { width: 100%; height: 100%; object-fit: cover; opacity: 0.4; }
     .content { padding: 40px; max-width: 1600px; margin: 0 auto; }
+    
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 30px; }
     .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
     
@@ -123,8 +136,8 @@ HTML_TEMPLATE = """
     .hero-preview img { width: 100%; height: 100%; object-fit: cover; }
     
     .tag-container { padding: 10px 15px 15px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .tag-pill { font-size: 0.65em; background: #333; color: #aaa; padding: 4px 10px; border-radius: 4px; font-weight: 800; text-transform: uppercase; text-decoration: none; }
-    .tag-pill:hover { background: var(--accent); color: #000; }
+    .tag-pill { font-size: 0.65em; background: #333; color: #aaa; padding: 4px 10px; border-radius: 4px; font-weight: 800; text-transform: uppercase; text-decoration: none; border: 1px solid transparent; }
+    .tag-pill:hover { background: var(--accent); color: #000; border-color: #fff; }
 
     .breadcrumb { font-weight: 800; color: #666; margin-bottom: 30px; text-transform: uppercase; font-size: 0.8em; }
     .breadcrumb a { color: var(--accent); text-decoration: none; }
@@ -164,6 +177,9 @@ HTML_TEMPLATE = """
             <div class="hero-preview">{% if c.comp_hash %}<img src="/composite/{{c.comp_hash}}.jpg" loading="lazy">{% endif %}</div>
             <div style="padding:20px 20px 5px;"><a href="{{ c.url }}" style="text-decoration:none; color:#fff;"><h3 style="margin:0;">{{ c.title }}</h3></a>
             <div style="color:#666; font-size:0.85em; font-weight:700;">{{ c.subtitle }}</div></div>
+            <div class="tag-container">
+                {% for t in c.tags %}<a href="/tags/{{t}}" class="tag-pill">{{t}}</a>{% endfor %}
+            </div>
         </div>{% endfor %}
     </div>{% endif %}
 
@@ -236,27 +252,46 @@ def rotate(sha1):
 @app.route('/timeline')
 def timeline():
     load_cache(); decades = sorted(list(set(p['_decade'] for p in DB_CACHE)), reverse=True)
-    cards = [{'id':f"d_{d}", 'title':d, 'subtitle':f"{len([p for p in DB_CACHE if p['_decade']==d])} items", 'url':f"/timeline/decade/{d}", 'heroes':[p for p in DB_CACHE if p['_decade']==d]} for d in decades]
+    cards = []
+    for d in decades:
+        items = [p for p in DB_CACHE if p['_decade']==d]
+        cards.append({'id':f"d_{d}", 'title':d, 'subtitle':f"{len(items)} items", 'url':f"/timeline/decade/{d}", 'heroes':items, 'tags': get_top_tags(items)})
     for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Timeline", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb="Decades", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
 
 @app.route('/timeline/decade/<decade>')
 def timeline_decade(decade):
     load_cache(); years = sorted(list(set(p['_year'] for p in DB_CACHE if p['_decade'] == decade)), reverse=True)
-    cards = [{'id':f"y_{y}", 'title':y, 'subtitle':f"{len([p for p in DB_CACHE if p['_year']==y])} items", 'url':f"/timeline/year/{y}", 'heroes':[p for p in DB_CACHE if p['_year']==y]} for y in years]
+    cards = []
+    for y in years:
+        items = [p for p in DB_CACHE if p['_year']==y]
+        cards.append({'id':f"y_{y}", 'title':y, 'subtitle':f"{len(items)} items", 'url':f"/timeline/year/{y}", 'heroes':items, 'tags': get_top_tags(items)})
     for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"The {decade}", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / {decade}", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
 
 @app.route('/timeline/year/<year>')
 def timeline_year(year):
-    load_cache(); imgs = [p for p in DB_CACHE if p['_year'] == year]
-    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=year, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}", photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
+    load_cache(); m_map = defaultdict(list)
+    for p in [p for p in DB_CACHE if p['_year'] == year]:
+        m_map[p['_month']].append(p)
+    cards = []
+    for m_code in sorted(m_map.keys()):
+        imgs = m_map[m_code]; m_name = imgs[0]['_month_name']
+        cards.append({'id':f"m_{year}_{m_code}", 'title':m_name, 'subtitle':f"{len(imgs)} items", 'url':f"/timeline/month/{year}/{m_code}", 'heroes':imgs, 'tags': get_top_tags(imgs)})
+    for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=year, active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
+
+@app.route('/timeline/month/<year>/<month>')
+def timeline_month(year, month):
+    load_cache(); imgs = [p for p in DB_CACHE if p['_year'] == year and p['_month'] == month]
+    m_name = imgs[0]['_month_name'] if imgs else "Month"
+    return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"{m_name} {year}", active_tab="timeline", banner_img="hero-timeline.png", breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / {m_name}", photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
 
 @app.route('/undated')
 def undated():
     load_cache(); f_map = defaultdict(list)
     for p in UNDATED_CACHE: f_map[p['_folder_group']].append(p)
-    cards = [{'id':f"u_{f}", 'title':f, 'subtitle':f"{len(imgs)} items", 'url':f"/undated/{f}", 'heroes':imgs} for f, imgs in sorted(f_map.items())]
+    cards = [{'id':f"u_{f}", 'title':f, 'subtitle':f"{len(imgs)} items", 'url':f"/undated/{f}", 'heroes':imgs, 'tags': get_top_tags(imgs)} for f, imgs in sorted(f_map.items())]
     for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Undated Archive", active_tab="undated", banner_img="hero-undated.png", breadcrumb="Undated", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
 
@@ -273,7 +308,10 @@ def explorer(sub=""):
         w_path = p['_web_path']
         if w_path.startswith(prefix):
             rem = w_path[len(prefix):]; (unique_subs.add(rem.split('/')[0]) if '/' in rem else direct_files.append(p))
-    cards = [{'id':f"f_{f}", 'title':f, 'subtitle':f"{len([p for p in all_m if p['_web_path'].startswith(prefix+f+'/')])} items", 'url':f"/folder/{prefix+f}", 'heroes':[p for p in all_m if p['_web_path'].startswith(prefix+f+'/')] } for f in sorted(list(unique_subs))]
+    cards = []
+    for f in sorted(list(unique_subs)):
+        items = [p for p in all_m if p['_web_path'].startswith(prefix+f+'/')]
+        cards.append({'id':f"f_{f}", 'title':f, 'subtitle':f"{len(items)} items", 'url':f"/folder/{prefix+f}", 'heroes':items, 'tags': get_top_tags(items)})
     for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Explorer", active_tab="file", banner_img="hero-files.png", breadcrumb="Root" if not sub else f"<a href='/folder'>Root</a> / {sub.replace('/', ' / ')}", cards=cards, photos=direct_files, manifests={**{c['id']:build_manifest(c['heroes']) for c in cards}, 'main_gallery':build_manifest(direct_files)})
 
@@ -282,7 +320,7 @@ def explorer(sub=""):
 def tags(tag=None):
     load_cache()
     if not tag:
-        cards = [{'id':f"t_{t}", 'title':f"#{t}", 'subtitle':f"{len(imgs)} items", 'url':f"/tags/{t}", 'heroes':imgs} for t, imgs in sorted(GLOBAL_TAGS.items())]
+        cards = [{'id':f"t_{t}", 'title':f"#{t}", 'subtitle':f"{len(imgs)} items", 'url':f"/tags/{t}", 'heroes':imgs, 'tags': []} for t, imgs in sorted(GLOBAL_TAGS.items())]
         for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
         return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="All Tags", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
     imgs = GLOBAL_TAGS.get(tag, [])
