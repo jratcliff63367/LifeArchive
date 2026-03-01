@@ -2,6 +2,7 @@ import os
 import sqlite3
 import hashlib
 import logging
+import re
 from datetime import datetime
 from collections import defaultdict, Counter
 from flask import Flask, request, render_template_string, send_from_directory, send_file, jsonify
@@ -20,6 +21,10 @@ THUMB_DIR = os.path.join(ARCHIVE_ROOT, "_thumbs")
 COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
 THEME_COLOR = "#bb86fc"
 
+# --- TAG EXCLUSIONS ---
+# Words in this list (case-insensitive) will not appear as tags in the UI
+TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images']
+
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
 app = Flask(__name__)
 
@@ -28,6 +33,17 @@ app = Flask(__name__)
 ### ---------------------------------------------------------------------------
 
 DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
+
+def is_excluded_tag(tag):
+    """Checks if a tag is a year or in the exclusion list."""
+    t_clean = tag.strip().lower()
+    # Exclude if it's in our list
+    if t_clean in TAG_EXCLUSIONS:
+        return True
+    # Exclude if it's a 4-digit year (e.g., 2019)
+    if re.fullmatch(r'\d{4}', t_clean):
+        return True
+    return False
 
 def init_db_extensions():
     if not os.path.exists(DB_PATH): return
@@ -50,9 +66,13 @@ def load_cache():
         dt_str = str(item['final_dt'])
         item['_web_path'] = item['rel_fqn'].replace('\\', '/')
         
-        # Tag Parsing
+        # Tag Parsing with Filter
         raw_tags = f"{item['path_tags'] or ''},{item['custom_tags'] or ''}"
-        item['_tags_list'] = sorted(list(set([t.strip().title() for t in raw_tags.split(',') if t.strip()])))
+        # Split, strip, and filter out years and excluded words
+        item['_tags_list'] = sorted(list(set([
+            t.strip().title() for t in raw_tags.split(',') 
+            if t.strip() and not is_excluded_tag(t)
+        ])))
         
         if dt_str.startswith("0000"):
             parts = item['_web_path'].split('/')
