@@ -6,21 +6,14 @@ import time
 from datetime import datetime
 from PIL import Image
 
-# --- CONFIGURATION (EDIT THESE FOR THE FULL RUN) ---
-# Add all your high-volume source folders here
+# --- CONFIGURATION ---
 SOURCES = [r"C:\test-undated", r"C:\test-images"] 
 DEST_ROOT = r"C:\website-test"
-
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
-LOG_INTERVAL = 100  # Only update the console every 100 files
+LOG_INTERVAL = 100 
 
-# Ensure environment is ready
 os.makedirs(THUMB_DIR, exist_ok=True)
-
-### ---------------------------------------------------------------------------
-### LAYER: IO_ENGINE
-### ---------------------------------------------------------------------------
 
 def get_sha1(file_path):
     h = hashlib.sha1()
@@ -29,33 +22,34 @@ def get_sha1(file_path):
             h.update(chunk)
     return h.hexdigest()
 
-def create_thumbnail(src_path, sha1):
-    t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
-    if os.path.exists(t_path): return
-    try:
-        with Image.open(src_path) as img:
-            img.thumbnail((400, 400))
-            img.convert("RGB").save(t_path, "JPEG", quality=85)
-    except: pass # Skip bad files silently during massive runs
-
-### ---------------------------------------------------------------------------
-### LAYER: DATA_PERSISTENCE
-### ---------------------------------------------------------------------------
+def get_unique_dest_path(base_dir, filename, sha1):
+    """
+    Prevents different photos with the same filename from overwriting each other.
+    """
+    name, ext = os.path.splitext(filename)
+    counter = 0
+    while True:
+        candidate_name = f"{name}_{counter}{ext}" if counter > 0 else filename
+        candidate_path = os.path.join(base_dir, candidate_name)
+        if not os.path.exists(candidate_path):
+            return candidate_path
+        if get_sha1(candidate_path) == sha1:
+            return candidate_path
+        counter += 1
 
 def init_db():
-    """Nukes the existing DB and cache for a clean stress-test foundation."""
-    if os.path.exists(DB_PATH): os.remove(DB_PATH)
-    # Also nuke the composite cache folder to fix the 'whack' thumbnails
-    comp_dir = os.path.join(THUMB_DIR, "_composites")
-    if os.path.isdir(comp_dir):
-        shutil.rmtree(comp_dir)
-        os.makedirs(comp_dir, exist_ok=True)
-        
+    """Ensures the DB and essential columns exist without wiping data."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE media (
-        sha1 TEXT PRIMARY KEY, rel_fqn TEXT, original_filename TEXT, 
-        path_tags TEXT, final_dt TEXT, dt_source TEXT, 
-        is_deleted INTEGER DEFAULT 0, custom_notes TEXT, custom_tags TEXT
+    conn.execute('''CREATE TABLE IF NOT EXISTS media (
+        sha1 TEXT PRIMARY KEY, 
+        rel_fqn TEXT, 
+        original_filename TEXT, 
+        path_tags TEXT, 
+        final_dt TEXT, 
+        dt_source TEXT, 
+        is_deleted INTEGER DEFAULT 0, 
+        custom_notes TEXT, 
+        custom_tags TEXT
     )''')
     conn.close()
 
@@ -70,31 +64,22 @@ def parse_date(file_path):
                 dt = datetime.strptime(exif[36867], '%Y:%m:%d %H:%M:%S')
                 return dt.strftime('%Y-%m-%d %H:%M:%S'), "EXIF"
     except: pass
-    mtime = os.path.getmtime(file_path)
-    dt = datetime.fromtimestamp(mtime)
-    return dt.strftime('%Y-%m-%d %H:%M:%S'), "File Creation"
-
-### ---------------------------------------------------------------------------
-### LAYER: WORKFLOW_CONTROLLER
-### ---------------------------------------------------------------------------
+    return datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S'), "File MTime"
 
 def run_ingest():
     init_db()
     conn = sqlite3.connect(DB_PATH)
     
-    start_time = time.time()
-    total_files = 0
+    total_new = 0
+    total_healed = 0
+    skipped = 0
     
-    print(f"--- STARTING MASSIVE INGEST (V3.1) ---")
-    print(f"Destination: {DEST_ROOT}")
+    print(f"--- STARTING ROBUST INGEST (V3.5) ---")
     
     for src in SOURCES:
-        if not os.path.exists(src):
-            print(f"Skipping missing source: {src}")
-            continue
+        if not os.path.exists(src): continue
+        source_name = os.path.basename(src)
             
-        print(f"\nScanning: {src}")
-        
         for root, _, files in os.walk(src):
             for f in files:
                 if not f.lower().endswith(('.jpg', '.jpeg', '.png')): continue
@@ -102,40 +87,66 @@ def run_ingest():
                 src_path = os.path.join(root, f)
                 sha1 = get_sha1(src_path)
                 
-                rel_dir = os.path.relpath(root, src)
-                dest_dir = os.path.join(DEST_ROOT, os.path.basename(src), rel_dir)
-                os.makedirs(dest_dir, exist_ok=True)
-                dest_path = os.path.join(dest_dir, f)
+                # Check DB for existing identity
+                existing = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
                 
-                # PHYSICAL COPY
+                if existing:
+                    # Identity is known. Check if the physical file is where it should be.
+                    if os.path.exists(os.path.join(DEST_ROOT, existing[0])):
+                        skipped += 1
+                        continue
+                    else:
+                        # SELF-HEALING: The photo is in the DB but missing from the disk.
+                        # We will copy it to the new destination and update the DB pointer.
+                        rel_dir = os.path.relpath(root, src)
+                        dest_dir = os.path.join(DEST_ROOT, source_name, rel_dir)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        dest_path = get_unique_dest_path(dest_dir, f, sha1)
+                        
+                        shutil.copy2(src_path, dest_path)
+                        new_rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
+                        
+                        conn.execute("UPDATE media SET rel_fqn = ? WHERE sha1 = ?", (new_rel_fqn, sha1))
+                        total_healed += 1
+                        continue
+
+                # NEW PHOTO LOGIC
+                rel_dir = os.path.relpath(root, src)
+                dest_dir = os.path.join(DEST_ROOT, source_name, rel_dir)
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_path = get_unique_dest_path(dest_dir, f, sha1)
+                
                 shutil.copy2(src_path, dest_path)
                 
-                # METADATA & THUMB
                 final_dt, source_label = parse_date(dest_path)
                 rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
-                path_tags = rel_dir.replace(os.sep, ',')
                 
-                conn.execute("""INSERT OR REPLACE INTO media 
+                # Combine source folder and relative path for richer tags
+                path_parts = [source_name] + rel_dir.split(os.sep)
+                path_tags = ",".join([p for p in path_parts if p and p != "."])
+                
+                conn.execute("""INSERT INTO media 
                     (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source) 
                     VALUES (?, ?, ?, ?, ?, ?)""", 
-                    (sha1, rel_fqn, f, path_tags, final_dt, source_label))
+                    (sha1, rel_fqn, os.path.basename(dest_path), path_tags, final_dt, source_label))
                 
-                create_thumbnail(dest_path, sha1)
+                # Thumbnail creation
+                t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
+                if not os.path.exists(t_path):
+                    try:
+                        with Image.open(dest_path) as img:
+                            img.thumbnail((400, 400))
+                            img.convert("RGB").save(t_path, "JPEG", quality=85)
+                    except: pass
                 
-                total_files += 1
-                if total_files % LOG_INTERVAL == 0:
-                    elapsed = time.time() - start_time
-                    rate = total_files / elapsed if elapsed > 0 else 0
-                    print(f"\r  [Progress] Processed {total_files} files... ({rate:.1f} files/sec)", end="", flush=True)
+                total_new += 1
+                if (total_new + skipped + total_healed) % LOG_INTERVAL == 0:
+                    print(f"\r  [Progress] New: {total_new} | Healed: {total_healed} | Skipped: {skipped}", end="", flush=True)
 
     conn.commit()
     conn.close()
-    
-    duration = time.time() - start_time
-    print(f"\n\n--- INGEST COMPLETE ---")
-    print(f"Total Files Indexed: {total_files}")
-    print(f"Total Duration: {duration/60:.2f} minutes")
-    print(f"Final DB Size: {os.path.getsize(DB_PATH)/1024/1024:.2f} MB")
+    print(f"\n--- INGEST COMPLETE ---")
+    print(f"New added: {total_new}\nFiles healed: {total_healed}\nDuplicates skipped: {skipped}")
 
 if __name__ == "__main__":
     run_ingest()
