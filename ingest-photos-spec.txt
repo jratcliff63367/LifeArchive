@@ -1,0 +1,89 @@
+===============================================================================
+OFFICIAL TECHNICAL SPECIFICATION: LEGACY PHOTO ARCHIVE INGESTOR
+Version: 3.8 | Date: March 2026 | Status: ARCHITECTURAL LOCKDOWN
+===============================================================================
+
+1. SYSTEM ROLE & IDEMPOTENCY
+---------------------------------------------------------
+The Ingestor is a standalone CLI utility. It must be "Idempotent": 
+running it multiple times against the same Source/Destination must result 
+in 0 changes to the Database or Filesystem after the initial sync.
+
+2. DOCUMENTATION & READABILITY (MANDATORY)
+---------------------------------------------------------
+- CODE NARRATIVE: The script must be "over-commented." 
+- Every function must have a header block explaining Inputs and Outputs.
+- Every logical branch (if/else) must have a comment explaining "The Why."
+- Library-specific jargon (shutil, hashlib, sqlite3) must be explained 
+  in-line for a non-Python expert.
+
+3. STABILITY & ENVIRONMENT
+---------------------------------------------------------
+- Image.MAX_IMAGE_PIXELS = None
+  * MUST be set globally. Prevents crashes on massive panoramas.
+- OS.MAKEDIRS: All required folders (_thumbs, DEST_ROOT) must be verified
+  or created at launch.
+- SHUTIL.COPY2: Must be used to preserve original OS timestamps.
+
+4. THE IDENTITY & COLLISION LOGIC
+---------------------------------------------------------
+IDENTITY GATE:
+- Calculate SHA1 hash of the source file.
+- Query DB: "SELECT rel_fqn FROM media WHERE sha1 = ?"
+- IF EXISTS & FILE ON DISK: Skip file.
+- IF EXISTS & FILE MISSING: "Heal" by copying file and UPDATING 'rel_fqn'.
+- IF NEW: Proceed to Resolution.
+
+COLLISION RESOLVER:
+- If a different file (Different SHA1) shares a name in the target folder,
+  append a numeric suffix (e.g., photo_1.jpg) until a unique name is found.
+
+5. THE DATE RESOLUTION ALGORITHM (STRICT HIERARCHY)
+---------------------------------------------------------
+The script must resolve the date by "Exploding" the path into a list of 
+individual folder components.
+
+STEP A: UNDATED OVERRIDE
+- Iterate through all folders in the path. 
+- If 'undated' (case-insensitive) is found in ANY folder name:
+  * FORCE DATE: "0000-00-00 00:00:00"
+  * SOURCE: "Path Override: Undated"
+  * STOP RESOLUTION.
+
+STEP B: YEAR EXTRACTION (THE UNDERSCORE-SAFE REGEX)
+- Use Regex: (?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)
+  * This lookaround ensures "2005" is caught in "Trip_2005" or "2005_Day1".
+- The DEEPEST (most specific) folder containing a year becomes the TargetYear.
+
+STEP C: DATE ASSEMBLY
+- Get Internal Date (EXIF 36867 > OS mtime).
+- If TargetYear exists:
+  * If InternalDate.Year == TargetYear: Keep full InternalDate.
+  * If InternalDate.Year != TargetYear: Force "TargetYear-01-01 00:00:00".
+- If NO TargetYear exists: Use InternalDate as-is.
+
+6. THE TAGGING ALGORITHM (CLEAN COMPONENTS)
+---------------------------------------------------------
+1. Break path into a list of folder names.
+2. For each folder name:
+   - REMOVE any 4-digit year (using the Regex from Step 5B).
+   - REPLACE underscores (_) and hyphens (-) with spaces.
+   - TRIM whitespace.
+   - If the resulting string is not empty, add it to the Tag List.
+3. JOIN the Tag List with commas.
+
+7. DATABASE INTEGRITY
+---------------------------------------------------------
+- Use 'INSERT' or 'UPDATE'. 
+- NEVER use 'REPLACE'. It deletes existing 'custom_notes' and 'custom_tags'.
+- Schema must include: sha1(PK), rel_fqn, original_filename, path_tags, 
+  final_dt, dt_source, is_deleted(0), custom_notes, custom_tags.
+
+8. PERFORMANCE & OUTPUT
+---------------------------------------------------------
+- Progress Bar: Total Scanned | Rate (Files/Sec).
+- End Summary: Duration, New, Healed, Skipped, and DB size.
+
+===============================================================================
+END OF SPECIFICATION
+===============================================================================

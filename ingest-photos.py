@@ -3,180 +3,244 @@ import shutil
 import sqlite3
 import hashlib
 import time
+import re
 from datetime import datetime
 from PIL import Image
 
-# --- STABILITY FIX ---
-# Prevents "DecompressionBombError" for very large images/panoramas
+# --- STABILITY & ENVIRONMENT ---
+# We disable the "Decompression Bomb" protection in the Pillow library.
+# This is a critical safety setting that allows the script to process 
+# extremely large panorama images or high-resolution scans without crashing.
 Image.MAX_IMAGE_PIXELS = None 
 
 # --- CONFIGURATION ---
+# Define the source folders to scan and the master archive destination.
 SOURCES = [r"C:\test-undated", r"C:\test-images"] 
 DEST_ROOT = r"C:\website-test"
+
+# Derived paths for the database and thumbnail storage.
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
-LOG_INTERVAL = 100 
 
+# Number of files to process between console progress updates.
+LOG_INTERVAL = 50 
+
+# Regex pattern for 4-digit years (1950-2026).
+# We use 'lookarounds' (?<!\d) and (?!\d) to ensure we catch years even 
+# when they are surrounded by underscores (e.g., Trip_2024_Day1).
+YEAR_REGEX = r'(?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)'
+
+# Ensure the destination and thumbnail directories exist.
 os.makedirs(THUMB_DIR, exist_ok=True)
 
 ### ---------------------------------------------------------------------------
-### LAYER: IO_ENGINE
+### LAYER 1: IDENTITY & COLLISION LOGIC
 ### ---------------------------------------------------------------------------
 
 def get_sha1(file_path):
+    """
+    Creates a 'Digital Fingerprint' of a file's content.
+    The 'hashlib.sha1' function reads the file and produces a unique string.
+    If the file content changes by even one pixel, the hash will be different.
+    """
     h = hashlib.sha1()
     with open(file_path, 'rb') as f:
+        # We read the file in 8KB chunks to keep memory usage low.
         while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
 
 def get_unique_dest_path(base_dir, filename, sha1):
-    """Handles collisions: ensures unique files get unique names (e.g. photo_1.jpg)"""
+    """
+    Solves filename collisions. If a different photo is named 'img.jpg',
+    this function renames the new one to 'img_1.jpg'. If the content (SHA1)
+    is identical, it simply returns the existing path.
+    """
     name, ext = os.path.splitext(filename)
     counter = 0
     while True:
+        # Construct a candidate path (e.g., photo.jpg, then photo_1.jpg...)
         candidate_name = f"{name}_{counter}{ext}" if counter > 0 else filename
         candidate_path = os.path.join(base_dir, candidate_name)
+        
+        # If the file doesn't exist, this path is safe!
         if not os.path.exists(candidate_path):
             return candidate_path
+        
+        # If it DOES exist, check if it's the SAME photo (matching SHA1)
         if get_sha1(candidate_path) == sha1:
             return candidate_path
+        
+        # If it's a DIFFERENT photo with the same name, increment and try again.
         counter += 1
 
-def create_thumbnail(src_path, sha1):
-    t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
-    if os.path.exists(t_path): return
-    try:
-        with Image.open(src_path) as img:
-            img.thumbnail((400, 400))
-            img.convert("RGB").save(t_path, "JPEG", quality=85)
-    except Exception:
-        pass # Silent skip for corrupted files
+### ---------------------------------------------------------------------------
+### LAYER 2: THE RESOLUTION ENGINE (Dates & Tags)
+### ---------------------------------------------------------------------------
 
-def parse_date(file_path):
-    fname = os.path.basename(file_path)
-    if "OBI_" in fname:
-        return "0000-00-00 00:00:00", "Undated Fallback"
+def analyze_path_context(full_path):
+    """
+    The 'Brain' of the system. It explodes the path into components to 
+    find 'undated' flags, specific years, and clean tags.
+    """
+    # Split the path into a list of individual folder names.
+    parts = full_path.replace('\\', '/').split('/')
+    
+    is_undated = False
+    detected_year = None
+    clean_tag_list = []
+
+    for part in parts:
+        # Skip drive letters (like 'C:') or empty strings.
+        if not part or ':' in part: continue 
+        
+        # Check for the 'undated' override (case-insensitive).
+        if 'undated' in part.lower():
+            is_undated = True
+        
+        # Scan for a year. The deepest (most specific) folder wins.
+        year_match = re.search(YEAR_REGEX, part)
+        if year_match:
+            detected_year = year_match.group(1)
+        
+        # Clean the folder name for use as a tag by removing the year.
+        tag_part = re.sub(YEAR_REGEX, '', part)
+        # Replace underscores/hyphens with spaces and trim.
+        tag_part = tag_part.replace('_', ' ').replace('-', ' ').strip()
+        if tag_part:
+            clean_tag_list.append(tag_part)
+
+    return is_undated, detected_year, ",".join(clean_tag_list)
+
+def resolve_final_date(file_path, root_path):
+    """Implements the Spec's Date Hierarchy (Undated > Year Override > EXIF)."""
+    is_undated, folder_year, _ = analyze_path_context(root_path)
+    
+    # 1. Undated Override
+    if is_undated:
+        return "0000-00-00 00:00:00", "Path: Undated Override"
+    
+    # Extract internal file metadata (EXIF or Modification Time).
+    internal_dt = None
     try:
         with Image.open(file_path) as img:
             exif = img._getexif()
             if exif and 36867 in exif:
-                dt = datetime.strptime(exif[36867], '%Y:%m:%d %H:%M:%S')
-                return dt.strftime('%Y-%m-%d %H:%M:%S'), "EXIF"
+                internal_dt = datetime.strptime(exif[36867], '%Y:%m:%d %H:%M:%S')
     except: pass
-    return datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S'), "File MTime"
+    
+    if not internal_dt:
+        # Fallback to the Operating System's 'Modified' time.
+        internal_dt = datetime.fromtimestamp(os.path.getmtime(file_path))
+
+    # 2. Folder Year Override
+    if folder_year:
+        # If the camera year matches the folder year, trust the full date.
+        if str(internal_dt.year) == folder_year:
+            return internal_dt.strftime('%Y-%m-%d %H:%M:%S'), "EXIF (Year Match)"
+        else:
+            # If they conflict, the folder is the 'Source of Truth'. Set Jan 1.
+            return f"{folder_year}-01-01 00:00:00", f"Path: {folder_year} Override"
+
+    # 3. Default
+    return internal_dt.strftime('%Y-%m-%d %H:%M:%S'), "Default (EXIF/OS)"
 
 ### ---------------------------------------------------------------------------
-### LAYER: DATA_MANAGEMENT
+### LAYER 3: MAIN EXECUTION ENGINE
 ### ---------------------------------------------------------------------------
-
-def init_db():
-    """Initializes schema if missing. Does NOT delete existing data."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS media (
-        sha1 TEXT PRIMARY KEY, 
-        rel_fqn TEXT, 
-        original_filename TEXT, 
-        path_tags TEXT, 
-        final_dt TEXT, 
-        dt_source TEXT, 
-        is_deleted INTEGER DEFAULT 0, 
-        custom_notes TEXT, 
-        custom_tags TEXT
-    )''')
-    conn.close()
 
 def run_ingest():
-    init_db()
+    # Initialize the Database without wiping existing data.
     conn = sqlite3.connect(DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS media (
+        sha1 TEXT PRIMARY KEY, rel_fqn TEXT, original_filename TEXT, 
+        path_tags TEXT, final_dt TEXT, dt_source TEXT, 
+        is_deleted INTEGER DEFAULT 0, custom_notes TEXT, custom_tags TEXT
+    )''')
     
     start_time = time.time()
-    total_new = 0
-    total_healed = 0
-    total_skipped = 0
-    total_processed = 0
-    
-    print(f"--- STARTING V3.6 MASTER INGEST ---")
-    
+    stats = {"new": 0, "healed": 0, "skipped": 0, "total": 0}
+
+    print(f"--- STARTING V3.8.1 MASTER INGEST ---")
+
     for src in SOURCES:
-        if not os.path.exists(src):
-            print(f" ! Source not found: {src}")
-            continue
-            
+        if not os.path.exists(src): continue
         source_name = os.path.basename(src)
-        print(f" > Scanning: {source_name}")
-            
+
         for root, _, files in os.walk(src):
+            rel_dir = os.path.relpath(root, src)
+            
             for f in files:
                 if not f.lower().endswith(('.jpg', '.jpeg', '.png')): continue
                 
                 src_path = os.path.join(root, f)
                 sha1 = get_sha1(src_path)
-                total_processed += 1
+                stats["total"] += 1
                 
-                # GATE 1: Check Database Identity
+                # Check DB for content identity.
                 existing = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
                 
                 if existing:
-                    # Check if the physical file is still there
-                    if os.path.exists(os.path.join(DEST_ROOT, existing[0])):
-                        total_skipped += 1
+                    master_path = os.path.join(DEST_ROOT, existing[0])
+                    if os.path.exists(master_path):
+                        stats["skipped"] += 1
+                        continue
                     else:
-                        # SELF-HEALING: Record exists but file is missing
-                        rel_dir = os.path.relpath(root, src)
+                        # HEALING: The photo is in the DB but missing from the disk.
                         dest_dir = os.path.join(DEST_ROOT, source_name, rel_dir)
                         os.makedirs(dest_dir, exist_ok=True)
                         dest_path = get_unique_dest_path(dest_dir, f, sha1)
-                        
+                        # copy2 preserves the original file timestamps.
                         shutil.copy2(src_path, dest_path)
-                        new_rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
                         
-                        conn.execute("UPDATE media SET rel_fqn = ? WHERE sha1 = ?", (new_rel_fqn, sha1))
-                        create_thumbnail(dest_path, sha1)
-                        total_healed += 1
-                else:
-                    # NEW FILE: Standard Ingest
-                    rel_dir = os.path.relpath(root, src)
-                    dest_dir = os.path.join(DEST_ROOT, source_name, rel_dir)
-                    os.makedirs(dest_dir, exist_ok=True)
-                    dest_path = get_unique_dest_path(dest_dir, f, sha1)
-                    
-                    shutil.copy2(src_path, dest_path)
-                    
-                    final_dt, source_label = parse_date(dest_path)
-                    rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
-                    
-                    # Rich Tagging: [Source Name] + [Subfolders]
-                    path_parts = [source_name] + rel_dir.split(os.sep)
-                    path_tags = ",".join([p for p in path_parts if p and p != "."])
-                    
-                    conn.execute("""INSERT INTO media 
-                        (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source) 
-                        VALUES (?, ?, ?, ?, ?, ?)""", 
-                        (sha1, rel_fqn, os.path.basename(dest_path), path_tags, final_dt, source_label))
-                    
-                    create_thumbnail(dest_path, sha1)
-                    total_new += 1
+                        new_rel = os.path.relpath(dest_path, DEST_ROOT)
+                        # We update the 'rel_fqn' pointer instead of inserting a new row.
+                        conn.execute("UPDATE media SET rel_fqn = ? WHERE sha1 = ?", (new_rel, sha1))
+                        stats["healed"] += 1
+                        continue
 
-                # Progress Reporting
-                if total_processed % LOG_INTERVAL == 0:
+                # NEW INGEST
+                dest_dir = os.path.join(DEST_ROOT, source_name, rel_dir)
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_path = get_unique_dest_path(dest_dir, f, sha1)
+                
+                shutil.copy2(src_path, dest_path)
+                
+                # Resolve Dates and Tags based on the 'Hardened' spec rules.
+                final_dt, source_label = resolve_final_date(dest_path, root)
+                _, _, clean_tags = analyze_path_context(root)
+                final_tags = f"{source_name},{clean_tags}" if clean_tags else source_name
+                
+                rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
+                
+                # INSERT ensures we don't clobber any manually edited notes or tags.
+                conn.execute("""INSERT INTO media 
+                    (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source) 
+                    VALUES (?, ?, ?, ?, ?, ?)""", 
+                    (sha1, rel_fqn, f, final_tags, final_dt, source_label))
+                
+                # Create a 400px thumbnail.
+                t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
+                if not os.path.exists(t_path):
+                    try:
+                        with Image.open(dest_path) as img:
+                            img.thumbnail((400, 400))
+                            img.convert("RGB").save(t_path, "JPEG", quality=85)
+                    except: pass
+                
+                stats["new"] += 1
+
+                # Progress Display: Calculates real-time files per second.
+                if stats["total"] % LOG_INTERVAL == 0:
                     elapsed = time.time() - start_time
-                    rate = total_processed / elapsed if elapsed > 0 else 0
-                    print(f"\r  [Progress] {total_processed} files scanned... ({rate:.1f} files/sec)", end="", flush=True)
+                    rate = stats["total"] / elapsed if elapsed > 0 else 0
+                    print(f"\r  [Progress] {stats['total']} files | {rate:.1f} files/sec", end="", flush=True)
 
     conn.commit()
     conn.close()
     
-    duration = time.time() - start_time
-    db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
-    
     print(f"\n\n--- INGEST COMPLETE ---")
-    print(f"Duration:       {duration:.1f} seconds")
-    print(f"Total Scanned:  {total_processed}")
-    print(f"New Items:      {total_new}")
-    print(f"Files Restored: {total_healed} (Self-Healed)")
-    print(f"Skipped:        {total_skipped} (Existing)")
-    print(f"Final DB Size:  {db_size:.2f} MB")
+    print(f"New: {stats['new']} | Healed: {stats['healed']} | Skipped: {stats['skipped']}")
 
 if __name__ == "__main__":
     run_ingest()
