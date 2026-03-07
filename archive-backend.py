@@ -7,7 +7,11 @@ from datetime import datetime
 from collections import defaultdict, Counter
 from flask import Flask, request, render_template_string, send_from_directory, send_file, jsonify
 from urllib.parse import unquote
-from PIL import Image, ImageOps  # Added ImageOps for the orientation fix
+from PIL import Image, ImageOps
+
+# --- PILLOW SETTINGS ---
+# Fixes the "DecompressionBombWarning" for high-res scans/panoramas
+Image.MAX_IMAGE_PIXELS = None 
 
 # --- LOGGING SUPPRESSION ---
 log = logging.getLogger('werkzeug')
@@ -22,7 +26,7 @@ COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
 THEME_COLOR = "#bb86fc"
 
 # --- TAG EXCLUSIONS ---
-TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images', "terrysbackup", "topaz-undated", "pics from card to look through" ]
+TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images']
 
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
 app = Flask(__name__)
@@ -34,12 +38,9 @@ app = Flask(__name__)
 DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
 
 def is_excluded_tag(tag):
-    """Checks if a tag is a year or in the exclusion list."""
     t_clean = tag.strip().lower()
-    if t_clean in TAG_EXCLUSIONS:
-        return True
-    if re.fullmatch(r'\d{4}', t_clean):
-        return True
+    if t_clean in TAG_EXCLUSIONS: return True
+    if re.fullmatch(r'\d{4}', t_clean): return True
     return False
 
 def init_db_extensions():
@@ -89,16 +90,13 @@ def load_cache():
 
 def get_top_tags(items, limit=3):
     counts = Counter()
-    for itm in items:
-        counts.update(itm.get('_tags_list', []))
+    for itm in items: counts.update(itm.get('_tags_list', []))
     return [t for t, _ in counts.most_common(limit)]
 
 def get_composite_hash(path_key, media_list):
     if not media_list: return None
     conn = sqlite3.connect(DB_PATH)
     cached = conn.execute("SELECT composite_hash FROM composite_cache WHERE path_key=?", (path_key,)).fetchone()
-    
-    # Check if we have a cached file and it actually exists on disk
     if cached and os.path.exists(os.path.join(COMPOSITE_DIR, f"{cached[0]}.jpg")):
         conn.close(); return cached[0]
 
@@ -110,20 +108,17 @@ def get_composite_hash(path_key, media_list):
     if not os.path.exists(cp):
         canvas = Image.new('RGB', (400, 400), (13, 13, 13))
         for i, h in enumerate(heroes):
-            # FIXED: Open the original high-res image to get full EXIF data for the rotation fix
-            orig_path = os.path.join(ARCHIVE_ROOT, h['rel_fqn'])
-            if os.path.exists(orig_path):
+            # OPTIMIZATION: Try to use the pre-generated thumbnail first to avoid "Decompression Bombs"
+            thumb_path = os.path.join(THUMB_DIR, f"{h['sha1']}.jpg")
+            img_path = thumb_path if os.path.exists(thumb_path) else os.path.join(ARCHIVE_ROOT, h['rel_fqn'])
+            
+            if os.path.exists(img_path):
                 try:
-                    with Image.open(orig_path) as img:
-                        # Correct orientation based on EXIF tag
+                    with Image.open(img_path) as img:
                         img = ImageOps.exif_transpose(img) 
                         img.thumbnail((100, 100))
-                        
-                        # Calculate centered offsets for the 100x100 grid cell
                         tw, th = img.size
-                        off_x = (i % 4) * 100 + (100 - tw) // 2
-                        off_y = (i // 4) * 100 + (100 - th) // 2
-                        canvas.paste(img, (off_x, off_y))
+                        canvas.paste(img, ((i % 4) * 100 + (100-tw)//2, (i // 4) * 100 + (100-th)//2))
                 except: continue
         canvas.save(cp, "JPEG", quality=85)
 
@@ -345,9 +340,19 @@ def explorer(sub=""):
 def tags(tag=None):
     load_cache()
     if not tag:
-        cards = [{'id':f"t_{t}", 'title':f"#{t}", 'subtitle':f"{len(imgs)} items", 'url':f"/tags/{t}", 'heroes':imgs, 'tags': []} for t, imgs in sorted(GLOBAL_TAGS.items())]
-        for c in cards: c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
+        # Sort tags and prepare cards
+        sorted_tag_names = sorted(GLOBAL_TAGS.keys())
+        cards = []
+        for t in sorted_tag_names:
+            imgs = GLOBAL_TAGS[t]
+            cards.append({'id':f"t_{t}", 'title':f"#{t}", 'subtitle':f"{len(imgs)} items", 'url':f"/tags/{t}", 'heroes':imgs, 'tags': []})
+        
+        # Batch generate composite hashes (this is where it was hanging)
+        for c in cards: 
+            c['comp_hash'] = get_composite_hash(c['id'], c['heroes'])
+            
         return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title="Tags", active_tab="tags", banner_img="hero-tags.png", breadcrumb="All Tags", cards=cards, manifests={c['id']:build_manifest(c['heroes']) for c in cards})
+    
     imgs = GLOBAL_TAGS.get(tag, [])
     return render_template_string(HTML_TEMPLATE, theme_color=THEME_COLOR, page_title=f"#{tag}", active_tab="tags", banner_img="hero-tags.png", breadcrumb=f"<a href='/tags'>Tags</a> / {tag}", photos=imgs, manifests={'main_gallery':build_manifest(imgs)})
 
