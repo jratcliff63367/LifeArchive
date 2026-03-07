@@ -15,13 +15,13 @@ Image.MAX_IMAGE_PIXELS = None
 
 # --- CONFIGURATION ---
 # Define the source folders to scan and the master archive destination.
-SOURCES = [r"C:\test-undated", r"C:\test-images"] 
+SOURCES = [r"C:\TerrysBackup", r"E:\topaz-undated"] 
 DEST_ROOT = r"C:\website-test"
 
 # Derived paths for the database and thumbnail storage.
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
-
+ 
 # Number of files to process between console progress updates.
 LOG_INTERVAL = 50 
 
