@@ -7,7 +7,7 @@ from datetime import datetime
 from collections import defaultdict, Counter
 from flask import Flask, request, render_template_string, send_from_directory, send_file, jsonify
 from urllib.parse import unquote
-from PIL import Image
+from PIL import Image, ImageOps  # Added ImageOps for the orientation fix
 
 # --- LOGGING SUPPRESSION ---
 log = logging.getLogger('werkzeug')
@@ -22,8 +22,7 @@ COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
 THEME_COLOR = "#bb86fc"
 
 # --- TAG EXCLUSIONS ---
-# Words in this list (case-insensitive) will not appear as tags in the UI
-TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images']
+TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images', "terrysbackup", "topaz-undated", "pics from card to look through" ]
 
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
 app = Flask(__name__)
@@ -37,10 +36,8 @@ DB_CACHE, UNDATED_CACHE, GLOBAL_TAGS = [], [], defaultdict(list)
 def is_excluded_tag(tag):
     """Checks if a tag is a year or in the exclusion list."""
     t_clean = tag.strip().lower()
-    # Exclude if it's in our list
     if t_clean in TAG_EXCLUSIONS:
         return True
-    # Exclude if it's a 4-digit year (e.g., 2019)
     if re.fullmatch(r'\d{4}', t_clean):
         return True
     return False
@@ -66,9 +63,7 @@ def load_cache():
         dt_str = str(item['final_dt'])
         item['_web_path'] = item['rel_fqn'].replace('\\', '/')
         
-        # Tag Parsing with Filter
         raw_tags = f"{item['path_tags'] or ''},{item['custom_tags'] or ''}"
-        # Split, strip, and filter out years and excluded words
         item['_tags_list'] = sorted(list(set([
             t.strip().title() for t in raw_tags.split(',') 
             if t.strip() and not is_excluded_tag(t)
@@ -93,7 +88,6 @@ def load_cache():
     conn.close()
 
 def get_top_tags(items, limit=3):
-    """Aggregates the most frequent tags for a collection of items."""
     counts = Counter()
     for itm in items:
         counts.update(itm.get('_tags_list', []))
@@ -103,6 +97,8 @@ def get_composite_hash(path_key, media_list):
     if not media_list: return None
     conn = sqlite3.connect(DB_PATH)
     cached = conn.execute("SELECT composite_hash FROM composite_cache WHERE path_key=?", (path_key,)).fetchone()
+    
+    # Check if we have a cached file and it actually exists on disk
     if cached and os.path.exists(os.path.join(COMPOSITE_DIR, f"{cached[0]}.jpg")):
         conn.close(); return cached[0]
 
@@ -114,11 +110,20 @@ def get_composite_hash(path_key, media_list):
     if not os.path.exists(cp):
         canvas = Image.new('RGB', (400, 400), (13, 13, 13))
         for i, h in enumerate(heroes):
-            tp = os.path.join(THUMB_DIR, f"{h['sha1']}.jpg")
-            if os.path.exists(tp):
+            # FIXED: Open the original high-res image to get full EXIF data for the rotation fix
+            orig_path = os.path.join(ARCHIVE_ROOT, h['rel_fqn'])
+            if os.path.exists(orig_path):
                 try:
-                    with Image.open(tp) as img:
-                        img.thumbnail((100, 100)); canvas.paste(img, ((i % 4) * 100, (i // 4) * 100))
+                    with Image.open(orig_path) as img:
+                        # Correct orientation based on EXIF tag
+                        img = ImageOps.exif_transpose(img) 
+                        img.thumbnail((100, 100))
+                        
+                        # Calculate centered offsets for the 100x100 grid cell
+                        tw, th = img.size
+                        off_x = (i % 4) * 100 + (100 - tw) // 2
+                        off_y = (i // 4) * 100 + (100 - th) // 2
+                        canvas.paste(img, (off_x, off_y))
                 except: continue
         canvas.save(cp, "JPEG", quality=85)
 
