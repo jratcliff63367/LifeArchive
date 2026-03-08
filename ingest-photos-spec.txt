@@ -1,6 +1,6 @@
 ===============================================================================
 OFFICIAL TECHNICAL SPECIFICATION: LEGACY PHOTO ARCHIVE INGESTOR
-Version: 3.8 | Date: March 2026 | Status: ARCHITECTURAL LOCKDOWN
+Version: 3.9 | Date: March 2026 | Status: ARCHITECTURAL LOCKDOWN
 ===============================================================================
 
 1. SYSTEM ROLE & IDEMPOTENCY
@@ -29,34 +29,38 @@ in 0 changes to the Database or Filesystem after the initial sync.
 ---------------------------------------------------------
 IDENTITY GATE:
 - Calculate SHA1 hash of the source file.
-- Query DB: "SELECT rel_fqn FROM media WHERE sha1 = ?"
-- IF EXISTS & FILE ON DISK: Skip file.
-- IF EXISTS & FILE MISSING: "Heal" by copying file and UPDATING 'rel_fqn'.
-- IF NEW: Proceed to Resolution.
+- If SHA1 exists in DB AND rel_fqn exists on disk: SKIP (Duplicate).
+- If SHA1 exists in DB BUT rel_fqn is missing: HEAL (Copy file to new 
+  destination and UPDATE the rel_fqn in the database).
 
 COLLISION RESOLVER:
-- If a different file (Different SHA1) shares a name in the target folder,
-  append a numeric suffix (e.g., photo_1.jpg) until a unique name is found.
+- If a different file (different SHA1) already exists at the target path, 
+  append a numerical suffix (e.g., photo_1.jpg) until a unique path is found.
 
 5. THE DATE RESOLUTION ALGORITHM (STRICT HIERARCHY)
 ---------------------------------------------------------
-The script must resolve the date by "Exploding" the path into a list of 
-individual folder components.
+The script must resolve the date using the following cascading logic:
+
+STEP 0: THE GPS GOLDEN SIGNAL
+- Validation Gate: Check EXIF for GPSLatitude and GPSLongitude.
+- Validity Check: Coordinates must be non-zero (Not "Null Island") and 
+  within valid ranges (Lat -90/90, Lon -180/180).
+- Action: If valid GPS exists, trust EXIF 'DateTimeOriginal' (Tag 36867) 
+  as absolute truth. 
+- STOP RESOLUTION. GPS-verified time supersedes all other rules.
 
 STEP A: UNDATED OVERRIDE
-- Iterate through all folders in the path. 
-- If 'undated' (case-insensitive) is found in ANY folder name:
-  * FORCE DATE: "0000-00-00 00:00:00"
-  * SOURCE: "Path Override: Undated"
-  * STOP RESOLUTION.
+- Search folder path for 'undated' (case-insensitive).
+- If found, FORCE DATE to "0000-00-00 00:00:00".
+- STOP RESOLUTION.
 
-STEP B: YEAR EXTRACTION (THE UNDERSCORE-SAFE REGEX)
+STEP B: YEAR EXTRACTION
 - Use Regex: (?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)
-  * This lookaround ensures "2005" is caught in "Trip_2005" or "2005_Day1".
-- The DEEPEST (most specific) folder containing a year becomes the TargetYear.
+- Search folder names from deepest to shallowest.
+- The first (deepest) match becomes the "TargetYear".
 
 STEP C: DATE ASSEMBLY
-- Get Internal Date (EXIF 36867 > OS mtime).
+- Get "Internal Date" (EXIF DateTimeOriginal > OS mtime).
 - If TargetYear exists:
   * If InternalDate.Year == TargetYear: Keep full InternalDate.
   * If InternalDate.Year != TargetYear: Force "TargetYear-01-01 00:00:00".
@@ -81,9 +85,6 @@ STEP C: DATE ASSEMBLY
 
 8. PERFORMANCE & OUTPUT
 ---------------------------------------------------------
-- Progress Bar: Total Scanned | Rate (Files/Sec).
-- End Summary: Duration, New, Healed, Skipped, and DB size.
-
-===============================================================================
-END OF SPECIFICATION
+- Progress Bar: Total Scanned | New | Healed | Skipped.
+- End Summary: Duration, New Count, Healed Count, Duplicate Count.
 ===============================================================================
