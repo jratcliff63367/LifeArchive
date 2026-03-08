@@ -26,7 +26,7 @@ COMPOSITE_DIR = os.path.join(THUMB_DIR, "_composites")
 THEME_COLOR = "#bb86fc"
 
 # --- TAG EXCLUSIONS ---
-TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images']
+TAG_EXCLUSIONS = ['pictures', 'photos', 'photographs', 'media', 'images', 'terrysbackup', 'topaz-undated']
 
 os.makedirs(COMPOSITE_DIR, exist_ok=True)
 app = Flask(__name__)
