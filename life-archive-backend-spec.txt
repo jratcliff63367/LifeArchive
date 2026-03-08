@@ -1,0 +1,99 @@
+===============================================================================
+OFFICIAL TECHNICAL SPECIFICATION: LEGACY PHOTO ARCHIVE BACKEND
+Version: 1.1 | Date: March 2026 |
+Status: ARCHITECTURAL LOCKDOWN
+===============================================================================
+
+1. SYSTEM ROLE & ENVIRONMENT
+---------------------------------------------------------
+The Backend is a high-performance Flask-based web service serving as the 
+"Curator." It translates the SQLite database and managed filesystem into 
+a responsive, dark-themed UI.
+
+- FRAMEWORK: Python / Flask.
+- DATABASE: SQLite (archive_index.db).
+- IMAGE PROCESSING: Pillow (PIL).
+- GLOBAL SETTINGS: 
+  * Image.MAX_IMAGE_PIXELS = None must be set globally. [cite: 8]
+- DIRECTORIES:
+  * DEST_ROOT: Managed archive. [cite: 9]
+  * _thumbs: 400px JPEGs. [cite: 9]
+  * _thumbs/_composites: Cached 4x4 hero cards.
+  * _web_layout/assets: UI banners (hero-timeline.png, etc.).
+
+2. DATABASE SCHEMA (EXTENDED COMPATIBILITY)
+---------------------------------------------------------
+The backend must handle the existing schema and support proposed tables 
+gracefully (no error if missing).
+
+TABLE: media (Existing) [cite: 29]
+- sha1 (PK), rel_fqn, original_filename, path_tags, final_dt, dt_source, 
+  is_deleted, custom_notes, custom_tags.
+
+TABLE: identities (Proposed Face Recognition)
+- cluster_id (TEXT PK), display_name (TEXT).
+
+TABLE: detections (Proposed Face Recognition)
+- sha1 (TEXT), cluster_id (TEXT), x, y, w, h (Bounding box).
+
+TABLE: composite_cache (Internal)
+- path_key (TEXT PK), sha1_list (TEXT), composite_hash (TEXT).
+
+3. THE "HERO 16" ALGORITHMIC LOGIC (4x4 COMPOSITES)
+---------------------------------------------------------
+Selection for Decade/Year/Month/Folder cards:
+
+1. BURST AVOIDANCE: From the candidate pool, keep only the highest-scored 
+   image per 60-second window.
+2. GEOGRAPHIC CLUSTERING: 
+   - Apply K-Means++ clustering to GPS coordinates to find 16 centers.
+   - If < 16 unique locations: Use Round-Robin selection (best from Loc A, 
+     best from Loc B, second-best from Loc A, etc.) until 16 slots are filled.
+3. COMPOSITE ASSEMBLY:
+   - Grid: 4x4 (400x400px canvas).
+   - OPTIMIZATION: Use _thumbs/sha1.jpg for tiles to avoid decompression bombs.
+   - REQUIREMENT: Use ImageOps.exif_transpose on tiles for correct orientation.
+4. PERSISTENCE: MD5 hash the 16 SHA1s for the filename. Rebuild ONLY if 
+   database state (rotation/deletion/date) for those SHA1s changes.
+
+4. UI & AESTHETIC SPECIFICATIONS
+---------------------------------------------------------
+- THEME: Background #0d0d0d, Cards #1a1a1a, Accent Violet #bb86fc.
+- TYPOGRAPHY: 'Inter', 900-weight headers.
+- BANNERS: hero-timeline.png, hero-tags.png, hero-files.png, 
+  hero-undated.png, hero-maps.png, hero-videos.png.
+
+5. INTERACTION LOGIC
+---------------------------------------------------------
+- SELECTION: Google Photos style (Circular checkbox top-left). 'ESC' to clear.
+- CONTEXT MENU: Rotate (90/270), Tag, Date, Delete. Valid on thumbnails 
+  and Lightbox.
+- THE "BY DAY" CALENDAR: 
+  * Grid view (Google Calendar style).
+  * Clicking a day jumps DIRECTLY to Lightbox for all media that day.
+
+6. THE CURATE SIDEBAR (THE 'E' KEY)
+---------------------------------------------------------
+Displays:
+- IDENTITY: Filename, SHA1, Full Relative Path.
+- PROVENANCE: final_dt and dt_source (e.g., "GPS-Verified"). [cite: 18, 21]
+- GEOGRAPHY: Country, State, City, Street, Nearest Business Name.
+- AI (Italic Gray): ai_description, ai_tags.
+- HUMAN (Bold White): custom_notes, custom_tags.
+
+7. ENDPOINTS
+---------------------------------------------------------
+- /timeline: Decade/Year/Month hierarchy navigation.
+- /undated: Grouped by source folder.
+- /folder/<path>: Filesystem-mirror explorer.
+- /tags/<tag>: Tag-filtered grid.
+- /media/<path>: Serve original file.
+- /thumbs/<sha1>: Serve thumbnail.
+- /composite/<hash>: Serve 4x4 card.
+- /api/rotate/<sha1>: Transpose file, regen thumb, invalidate parent composites.
+
+8. STABILITY
+---------------------------------------------------------
+- Gracefully handle nulls in optional scripts (AI, Face, Geo).
+- Use SQLite UPDATE; NEVER use REPLACE to avoid note deletion. [cite: 29]
+===============================================================================

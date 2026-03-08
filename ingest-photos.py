@@ -10,7 +10,7 @@ from PIL import Image
 # --- CONFIGURATION ---
 # Add all high-volume source folders to the SOURCES list.
 # DEST_ROOT is the target directory for the managed archive.
-SOURCES = [r"e:\LegacyTransfer] 
+SOURCES = [r"e:\LegacyTransfer"] 
 DEST_ROOT = r"C:\LegacyTransfer-website"
 
 # Database and Folder paths
