@@ -14,12 +14,12 @@ Baseline behavior reproduced here:
 - Thumbnail serving and full-media serving
 - Lightbox with keyboard navigation
 - Context menu with 90 degree rotation operations
+- Photo-grid multi-select with checkbox overlays and batch rotate
 - Current curation sidebar shell (filename + notes textarea only)
 
 Not included yet:
 - Maps
 - Videos
-- Multi-select
 - Tag editing
 - Date editing
 - Delete operations
@@ -158,6 +158,60 @@ HTML_TEMPLATE = r"""
             position: relative;
             display: flex;
             flex-direction: column;
+        }
+        .photo-card.selected {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(187, 134, 252, 0.35);
+        }
+        .photo-select-wrap {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 20;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.55);
+            border: 1px solid rgba(255,255,255,0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(6px);
+        }
+        .photo-select-checkbox {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--accent);
+        }
+        .selection-bar {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(20, 20, 20, 0.95);
+            border: 1px solid #444;
+            border-radius: 12px;
+            padding: 12px 16px;
+            z-index: 10004;
+            display: none;
+            gap: 12px;
+            align-items: center;
+            font-weight: 800;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+        }
+        .selection-bar button {
+            background: #222;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-weight: 800;
+        }
+        .selection-bar button:hover {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
         }
         .card:hover {
             border-color: var(--accent);
@@ -345,7 +399,10 @@ HTML_TEMPLATE = r"""
         {% if photos %}
         <div class="photo-grid">
             {% for p in photos %}
-            <div class="card" oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
+            <div class="card photo-card" data-sha="{{ p.sha1 }}" oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
+                <div class="photo-select-wrap">
+                    <input type="checkbox" class="photo-select-checkbox" data-sha="{{ p.sha1 }}" aria-label="Select image">
+                </div>
                 <div class="hero-preview" onclick="openLB({{ loop.index0 }}, 'main_gallery')">
                     <img id="thumb-{{ p.sha1 }}" src="/thumbs/{{ p.sha1 }}.jpg" loading="lazy">
                 </div>
@@ -361,6 +418,12 @@ HTML_TEMPLATE = r"""
             {% endfor %}
         </div>
         {% endif %}
+    </div>
+
+    <div id="selection-bar" class="selection-bar">
+        <span id="selection-count">0 selected</span>
+        <button type="button" onclick="rotateSelection(90)">Rotate 90° Clockwise ↻</button>
+        <button type="button" onclick="rotateSelection(270)">Rotate 90° Counter ↺</button>
     </div>
 
     <div id="lightbox" onclick="if(event.target===this) closeLB()">
@@ -385,6 +448,7 @@ HTML_TEMPLATE = r"""
         let curM = null;
         let curI = 0;
         let menuSha1 = '';
+        let selectedSha1s = new Set();
 
         function handleGridClick(e, key) {
             if (e.target.closest('a') || e.target.closest('.tag-pill')) return;
@@ -426,6 +490,45 @@ HTML_TEMPLATE = r"""
             document.getElementById('lb-sidebar').classList.remove('visible');
         }
 
+        function refreshSelectionUI() {
+            document.querySelectorAll('.photo-card').forEach(card => {
+                const sha1 = card.dataset.sha;
+                const checked = selectedSha1s.has(sha1);
+                card.classList.toggle('selected', checked);
+                const cb = card.querySelector('.photo-select-checkbox');
+                if (cb) cb.checked = checked;
+            });
+            const bar = document.getElementById('selection-bar');
+            const count = selectedSha1s.size;
+            if (bar) {
+                if (count > 0) {
+                    bar.style.display = 'flex';
+                    document.getElementById('selection-count').innerText = `${count} selected`;
+                } else {
+                    bar.style.display = 'none';
+                }
+            }
+        }
+
+        function clearSelection() {
+            if (selectedSha1s.size === 0) return;
+            selectedSha1s.clear();
+            refreshSelectionUI();
+        }
+
+        function toggleSelection(sha1) {
+            if (selectedSha1s.has(sha1)) selectedSha1s.delete(sha1);
+            else selectedSha1s.add(sha1);
+            refreshSelectionUI();
+        }
+
+        function getContextTargets(clickedSha1) {
+            if (selectedSha1s.size > 1 && selectedSha1s.has(clickedSha1)) {
+                return Array.from(selectedSha1s);
+            }
+            return [clickedSha1];
+        }
+
         function handleCtx(e, sha1) {
             e.preventDefault();
             menuSha1 = sha1;
@@ -441,6 +544,22 @@ HTML_TEMPLATE = r"""
         }
 
         function rotateImage(degrees) {
+            const targets = getContextTargets(menuSha1);
+            if (targets.length > 1) {
+                fetch('/api/rotate_batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sha1_list: targets, degrees })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        location.reload();
+                    }
+                });
+                return;
+            }
+
             fetch('/api/rotate/' + menuSha1, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -459,18 +578,54 @@ HTML_TEMPLATE = r"""
             });
         }
 
-        window.onclick = () => {
+        function rotateSelection(degrees) {
+            if (selectedSha1s.size === 0) return;
+            fetch('/api/rotate_batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sha1_list: Array.from(selectedSha1s), degrees })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    location.reload();
+                }
+            });
+        }
+
+        window.onclick = (e) => {
             document.getElementById('context-menu').style.display = 'none';
         };
 
         document.onkeydown = (e) => {
-            if (e.key === 'Escape') closeLB();
+            if (e.key === 'Escape') {
+                if (selectedSha1s.size > 0) {
+                    clearSelection();
+                    return;
+                }
+                closeLB();
+            }
             if (document.getElementById('lightbox').classList.contains('active')) {
                 if (e.key === 'ArrowRight') changeImg(1);
                 if (e.key === 'ArrowLeft') changeImg(-1);
             }
             if (e.key.toLowerCase() === 'e') toggleSidebar();
         };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
+                cb.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleSelection(cb.dataset.sha);
+                });
+            });
+
+            document.querySelectorAll('.nav-bar a, .tag-pill, .breadcrumb a, .grid a').forEach(link => {
+                link.addEventListener('click', () => clearSelection());
+            });
+
+            refreshSelectionUI();
+        });
     </script>
 </body>
 </html>
@@ -654,32 +809,74 @@ def create_app(config: ArchiveConfig) -> Flask:
             return send_file(disk_path)
         return "Not Found", 404
 
-    @app.route("/api/rotate/<sha1>", methods=["POST"])
-    def rotate_image(sha1: str):
-        degrees = int((request.json or {}).get("degrees", 90))
+    def invalidate_composites() -> None:
+        for comp_file in config.composite_dir.glob("*.jpg"):
+            try:
+                comp_file.unlink()
+            except OSError:
+                pass
+        if config.db_path.exists():
+            with sqlite3.connect(config.db_path) as conn:
+                conn.execute("DELETE FROM composite_cache")
+                conn.commit()
 
+    def rotate_media_by_sha(sha1: str, degrees: int) -> tuple[bool, str | None]:
         with sqlite3.connect(config.db_path) as conn:
             row = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
 
         if not row:
-            return jsonify({"status": "error"}), 404
+            return False, "not found"
 
         full_path = config.archive_root / str(row[0])
         if not full_path.exists():
-            return jsonify({"status": "error", "message": "file missing"}), 404
+            return False, "file missing"
 
-        with Image.open(full_path) as img:
-            exif = img.info.get("exif")
-            method = Image.ROTATE_270 if degrees == 90 else Image.ROTATE_90
-            rotated = img.transpose(method)
-            rotated.save(full_path, "JPEG", exif=exif, quality=95)
+        try:
+            with Image.open(full_path) as img:
+                img = ImageOps.exif_transpose(img)
+                rotated = img.rotate(-degrees, expand=True)
+                rotated.convert("RGB").save(full_path, "JPEG", quality=95)
 
-        thumb_path = config.thumb_dir / f"{sha1}.jpg"
-        with Image.open(full_path) as img:
-            img.thumbnail((400, 400))
-            img.convert("RGB").save(thumb_path, "JPEG")
+            thumb_path = config.thumb_dir / f"{sha1}.jpg"
+            with Image.open(full_path) as img:
+                img = ImageOps.exif_transpose(img)
+                img.thumbnail((400, 400))
+                img.convert("RGB").save(thumb_path, "JPEG", quality=85)
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
 
+    @app.route("/api/rotate/<sha1>", methods=["POST"])
+    def rotate_image(sha1: str):
+        degrees = int((request.json or {}).get("degrees", 90))
+        ok, message = rotate_media_by_sha(sha1, degrees)
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 404
+        invalidate_composites()
         return jsonify({"status": "ok"})
+
+    @app.route("/api/rotate_batch", methods=["POST"])
+    def rotate_batch():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        degrees = int(payload.get("degrees", 90))
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+
+        results: dict[str, dict[str, Any]] = {}
+        any_success = False
+        for sha1 in sha1_list:
+            ok, message = rotate_media_by_sha(str(sha1), degrees)
+            results[str(sha1)] = {"status": "ok" if ok else "error"}
+            if message:
+                results[str(sha1)]["message"] = message
+            if ok:
+                any_success = True
+
+        if any_success:
+            invalidate_composites()
+
+        return jsonify({"status": "ok", "results": results})
 
     @app.route("/")
     @app.route("/timeline")
