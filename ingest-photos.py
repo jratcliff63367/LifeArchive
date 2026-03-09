@@ -5,13 +5,13 @@ import hashlib
 import time
 import re
 from datetime import datetime
-from PIL import Image
+from PIL import Image, ImageOps
 
 # --- CONFIGURATION ---
 # Add all high-volume source folders to the SOURCES list.
 # DEST_ROOT is the target directory for the managed archive.
-SOURCES = [r"e:\LegacyTransfer"] 
-DEST_ROOT = r"C:\LegacyTransfer-website"
+SOURCES = [r"c:\TerrysBackup", r"e:\Topaz-Undated"] 
+DEST_ROOT = r"C:\website-test"
 
 # Database and Folder paths
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
@@ -65,6 +65,17 @@ def get_unique_dest_path(base_dir, filename, sha1):
             return candidate_path
         
         counter += 1
+
+def generate_thumbnail(image_path, thumb_path):
+    """
+    Generate a UI thumbnail while honoring EXIF orientation.
+    This prevents portrait photos from being baked out sideways/upside-down
+    when the original relies on EXIF orientation metadata.
+    """
+    with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
+        img.thumbnail((400, 400))
+        img.convert("RGB").save(thumb_path, "JPEG", quality=85)
 
 ### ---------------------------------------------------------------------------
 ### LAYER: METADATA_ENGINE
@@ -268,10 +279,9 @@ def run_ingest():
                 t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
                 if not os.path.exists(t_path):
                     try:
-                        with Image.open(dest_path) as img:
-                            img.thumbnail((400, 400))
-                            img.convert("RGB").save(t_path, "JPEG", quality=85)
-                    except: pass
+                        generate_thumbnail(dest_path, t_path)
+                    except:
+                        pass
                 
                 total_new += 1
                 if (total_new + skipped + total_healed) % LOG_INTERVAL == 0:
