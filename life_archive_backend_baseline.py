@@ -30,6 +30,7 @@ Not included yet:
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import logging
 import os
@@ -350,6 +351,116 @@ HTML_TEMPLATE = r"""
             background: var(--accent);
             color: #000;
         }
+
+        .page-actions {
+            display: flex;
+            gap: 12px;
+            margin: -10px 0 24px;
+            flex-wrap: wrap;
+        }
+        .page-action {
+            text-decoration: none;
+            color: #fff;
+            background: #1b1b1b;
+            border: 1px solid #3a3a3a;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 0.85em;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .page-action.active, .page-action:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .calendar-shell {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            border: 1px solid #2f2f2f;
+            border-radius: 14px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.02);
+        }
+        .calendar-dow {
+            padding: 14px 10px;
+            text-align: center;
+            font-size: 0.8em;
+            font-weight: 800;
+            color: #aaa;
+            background: rgba(255,255,255,0.03);
+            border-right: 1px solid #242424;
+            border-bottom: 1px solid #242424;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .calendar-dow:nth-child(7) { border-right: 0; }
+        .day-cell {
+            min-height: 220px;
+            border-right: 1px solid #242424;
+            border-bottom: 1px solid #242424;
+            position: relative;
+            padding: 10px;
+            background: rgba(255,255,255,0.01);
+        }
+        .day-cell:nth-child(7n) { border-right: 0; }
+        .day-cell.empty {
+            background: rgba(0,0,0,0.08);
+        }
+        .day-number {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-weight: 800;
+            color: #aaa;
+            font-size: 0.9em;
+        }
+        .day-link {
+            display: block;
+            text-decoration: none;
+            color: inherit;
+            height: 100%;
+            padding-top: 22px;
+        }
+        .day-thumb-wrap {
+            width: 100%;
+            aspect-ratio: 16 / 10;
+            overflow: hidden;
+            border-radius: 10px;
+            background: #000;
+            margin-bottom: 10px;
+            border: 1px solid #2f2f2f;
+        }
+        .day-thumb-wrap img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .day-meta-title {
+            font-weight: 800;
+            font-size: 0.92em;
+            margin-bottom: 6px;
+            color: #fff;
+        }
+        .day-meta-sub {
+            color: #9a9a9a;
+            font-size: 0.82em;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .day-tag-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .day-location {
+            display: inline-block;
+            margin-bottom: 8px;
+            color: var(--accent);
+            font-size: 0.8em;
+            font-weight: 800;
+        }
+
     </style>
 </head>
 <body>
@@ -372,6 +483,46 @@ HTML_TEMPLATE = r"""
     <div class="content">
         <h1>{{ page_title }}</h1>
         <div class="breadcrumb">{{ breadcrumb | safe }}</div>
+
+        {% if action_links %}
+        <div class="page-actions">
+            {% for action in action_links %}
+            <a href="{{ action.url }}" class="page-action {{ 'active' if action.active else '' }}">{{ action.label }}</a>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if day_calendar %}
+        <div class="calendar-shell">
+            {% for dow in day_calendar.headers %}
+            <div class="calendar-dow">{{ dow }}</div>
+            {% endfor %}
+            {% for week in day_calendar.weeks %}
+                {% for cell in week %}
+                    {% if cell.day == 0 %}
+                    <div class="day-cell empty"></div>
+                    {% else %}
+                    <div class="day-cell {{ '' if cell.has_items else 'empty' }}">
+                        <div class="day-number">{{ cell.day }}</div>
+                        {% if cell.has_items %}
+                        <a class="day-link" href="{{ cell.url }}">
+                            <div class="day-thumb-wrap">
+                                <img src="/thumbs/{{ cell.thumb_sha1 }}.jpg" loading="lazy">
+                            </div>
+                            {% if cell.location_label %}<div class="day-location">{{ cell.location_label }}</div>{% endif %}
+                            <div class="day-meta-title">{{ cell.count }} photo{{ '' if cell.count == 1 else 's' }}</div>
+                            <div class="day-meta-sub">{{ cell.date_label }}</div>
+                            <div class="day-tag-row">
+                                {% for t in cell.tags %}<span class="tag-pill">{{ t }}</span>{% endfor %}
+                            </div>
+                        </a>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        </div>
+        {% endif %}
 
         {% if cards %}
         <div class="grid" style="margin-bottom: 50px;">
@@ -706,6 +857,9 @@ class ArchiveStore:
                 item["_year"] = dt_str[:4]
                 item["_month"] = dt_obj.strftime("%m")
                 item["_month_name"] = dt_obj.strftime("%B")
+                item["_day"] = dt_obj.strftime("%d")
+                item["_day_int"] = int(dt_obj.strftime("%d"))
+                item["_date_key"] = dt_obj.strftime("%Y-%m-%d")
                 item["_decade"] = dt_str[:3] + "0s"
                 self.db_cache.append(item)
 
@@ -718,6 +872,48 @@ class ArchiveStore:
         for item in items:
             counts.update(item.get("_tags_list", []))
         return [tag for tag, _ in counts.most_common(limit)]
+
+    def get_day_location_label(self, items: Iterable[dict[str, Any]]) -> str | None:
+        top_tags = self.get_top_tags(items, limit=3)
+        return top_tags[0] if top_tags else None
+
+    def build_month_day_calendar(self, year: str, month: str, month_items: list[dict[str, Any]]) -> dict[str, Any]:
+        year_int = int(year)
+        month_int = int(month)
+        month_name = datetime(year_int, month_int, 1).strftime('%B')
+        day_buckets: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for item in month_items:
+            day_buckets[int(item.get('_day_int', 0))].append(item)
+
+        cal = calendar.Calendar(firstweekday=6)
+        weeks = []
+        for week in cal.monthdayscalendar(year_int, month_int):
+            row = []
+            for day in week:
+                if day == 0:
+                    row.append({'day': 0, 'has_items': False})
+                    continue
+                day_items = sorted(day_buckets.get(day, []), key=lambda x: x.get('final_dt', ''))
+                if day_items:
+                    top_tags = self.get_top_tags(day_items, limit=3)
+                    row.append({
+                        'day': day,
+                        'has_items': True,
+                        'url': f'/timeline/month/{year}/{month}/day/{day:02d}',
+                        'thumb_sha1': day_items[0]['sha1'],
+                        'count': len(day_items),
+                        'tags': top_tags,
+                        'location_label': self.get_day_location_label(day_items),
+                        'date_label': f'{month_name} {day}, {year}',
+                    })
+                else:
+                    row.append({'day': day, 'has_items': False})
+            weeks.append(row)
+
+        return {
+            'headers': ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+            'weeks': weeks,
+        }
 
     def get_composite_hash(self, path_key: str, media_list: list[dict[str, Any]]) -> str | None:
         if not media_list:
@@ -799,6 +995,9 @@ def create_app(config: ArchiveConfig) -> Flask:
     store = ArchiveStore(config)
 
     def render_page(**kwargs: Any) -> str:
+        kwargs.setdefault('manifests', {})
+        kwargs.setdefault('action_links', None)
+        kwargs.setdefault('day_calendar', None)
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
     @app.route("/media/<path:relative_path>")
@@ -982,12 +1181,47 @@ def create_app(config: ArchiveConfig) -> Flask:
     def timeline_month(year: str, month: str):
         store.load_cache()
         imgs = [item for item in store.db_cache if item["_year"] == year and item["_month"] == month]
-        month_name = imgs[0]["_month_name"] if imgs else "Month"
+        month_name = imgs[0]["_month_name"] if imgs else datetime(int(year), int(month), 1).strftime("%B")
         return render_page(
             page_title=f"{month_name} {year}",
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / {month_name}",
+            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}],
+            photos=imgs,
+            manifests={"main_gallery": store.build_manifest(imgs)},
+        )
+
+    @app.route("/timeline/month/<year>/<month>/days")
+    def timeline_month_days(year: str, month: str):
+        store.load_cache()
+        imgs = [item for item in store.db_cache if item["_year"] == year and item["_month"] == month]
+        month_name = imgs[0]["_month_name"] if imgs else datetime(int(year), int(month), 1).strftime("%B")
+        day_calendar = store.build_month_day_calendar(year, month, imgs)
+        return render_page(
+            page_title=f"{month_name} {year} · Day View",
+            active_tab="timeline",
+            banner_img="hero-timeline.png",
+            breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / Day View",
+            action_links=[{'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
+            day_calendar=day_calendar,
+        )
+
+    @app.route("/timeline/month/<year>/<month>/day/<day>")
+    def timeline_month_day(year: str, month: str, day: str):
+        store.load_cache()
+        day_int = int(day)
+        imgs = [
+            item for item in store.db_cache
+            if item["_year"] == year and item["_month"] == month and int(item.get("_day_int", 0)) == day_int
+        ]
+        month_name = imgs[0]["_month_name"] if imgs else datetime(int(year), int(month), 1).strftime("%B")
+        return render_page(
+            page_title=f"{month_name} {day_int}, {year}",
+            active_tab="timeline",
+            banner_img="hero-timeline.png",
+            breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / <a href='/timeline/month/{year}/{month}/days'>Day View</a> / {day_int}",
+            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}, {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )

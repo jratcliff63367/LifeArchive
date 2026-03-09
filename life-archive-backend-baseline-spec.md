@@ -1,8 +1,13 @@
-# Life Archive Backend Baseline Technical Specification
+# Life Archive Backend Technical Specification
 
-Version: 1.1  
-Status: Baseline backend plus first feature delta  
-Purpose: This spec describes the **current backend behavior that must now be reproduced**, using the current SQLite database and archive layout produced by the ingestor. It intentionally stays close to the existing backend, but now adds one bounded feature: **multi-select on photo-grid pages with batch application of the existing rotate actions**. Any feature not explicitly described here is out of scope.
+Version: 1.2  
+Status: Baseline backend plus feature deltas  
+Purpose: This spec describes the current backend behavior that must be reproduced, using the current SQLite database and archive layout produced by the ingestor. It intentionally stays close to the existing backend, but now adds two bounded feature deltas:
+
+1. multi-select on photo-grid pages with batch application of the existing rotate actions
+2. a by-day calendar view reachable from a month page
+
+Any feature not explicitly described here is out of scope.
 
 ---
 
@@ -24,14 +29,15 @@ The backend must:
 - Provide a full-screen lightbox with keyboard navigation.
 - Provide a right-click context menu for rotate-right and rotate-left.
 - Provide the current minimal sidebar shell in the lightbox.
+- Provide a month-level Day View calendar page that groups month photos by day.
 
-This backend is a **photo browser and curator shell**, not yet a full metadata editor.
+This backend is a photo browser and curator shell, not yet a full metadata editor.
 
 ---
 
 ## 2. Explicit non-goals
 
-Do **not** implement any of the following in this baseline version:
+Do **not** implement any of the following in this version:
 
 - Maps page
 - Videos page
@@ -42,10 +48,11 @@ Do **not** implement any of the following in this baseline version:
 - Delete endpoint
 - Add/remove tag endpoint
 - Change date endpoint
-- By-day calendar view
 - Hero image selection by GPS, clustering, burst analysis, interest scoring, or ranking
+- A Google Calendar data integration of any kind
+- Week view, agenda view, or drag/drop calendar editing
 
-Even if older design notes mention those features, they are not part of the baseline backend.
+Even if older design notes mention those features, they are not part of the current backend.
 
 ---
 
@@ -120,7 +127,7 @@ Create `COMPOSITE_DIR` if it does not exist.
 
 ### 5.1 Required table: `media`
 
-The baseline backend assumes this table already exists and is populated by the ingestor.
+The backend assumes this table already exists and is populated by the ingestor.
 
 Required columns:
 
@@ -238,11 +245,14 @@ Then derive:
 - `_year`: first 4 chars of `final_dt`
 - `_month`: 2-digit month from parsed datetime, `01` through `12`
 - `_month_name`: full English month name, for example `January`
+- `_day`: 2-digit day from parsed datetime, `01` through `31`
+- `_day_int`: integer day for sorting and calendar placement
+- `_date_key`: `YYYY-MM-DD`
 - `_decade`: first 3 digits of year plus `0s`, for example `1990s`, `2000s`
 
 ### 6.3 Excluded tags
 
-The baseline backend must exclude the following tags case-insensitively:
+The backend must exclude the following tags case-insensitively:
 
 - `pictures`
 - `photos`
@@ -275,7 +285,7 @@ The tag index preserves the current ordering inherited from `DB_CACHE` or `UNDAT
 
 For any list of media items, count occurrences of tags found in each item's `_tags_list`, and return the `limit` most common tags.
 
-This is used only to display the small tag pills under cards.
+This is used only to display the small tag pills under cards and day cells.
 
 ### 7.2 `build_manifest(media_list)`
 
@@ -298,6 +308,37 @@ Example entry:
 ```
 
 These manifests are serialized to JSON and consumed by the front-end lightbox JavaScript.
+
+### 7.3 `get_day_location_label(items)`
+
+This feature does **not** require a true geolocation database.
+
+Instead, for day view only, derive a simple display label from existing tags.
+
+Required behavior:
+
+1. Call `get_top_tags(items, limit=3)`
+2. Use the first returned tag, if any, as the day cell's location-style label
+3. If no tags exist, use an empty string
+
+This is a UI convenience only. It is not a real geographic lookup.
+
+### 7.4 `get_calendar_grid(year, month)`
+
+Use Python's standard library `calendar` module to build a month grid.
+
+Required semantics:
+
+- weeks must start on Sunday
+- return a matrix of weeks
+- each week contains 7 integers
+- `0` means an empty day cell outside the month
+
+Equivalent behavior:
+
+```python
+calendar.Calendar(firstweekday=6).monthdayscalendar(year_int, month_int)
+```
 
 ---
 
@@ -442,10 +483,11 @@ Use these filenames:
 
 ### 9.5 Page body modes
 
-Pages render in one of two modes:
+Pages render in one of three modes:
 
 - **Card grid mode** for decade/year/month groups, folder groups, and tags index
 - **Photo grid mode** for actual images within a single group
+- **Day calendar mode** for the by-day month view
 
 ---
 
@@ -506,11 +548,12 @@ Selection exists only on **photo-grid pages**, meaning pages that render actual 
 This includes:
 
 - `/timeline/month/<year>/<month>`
+- `/timeline/month/<year>/<month>/day/<day>`
 - `/undated/<folder>`
 - `/folder` and `/folder/<path:sub>` for direct files shown in the current folder
 - `/tags/<tag>`
 
-Selection does **not** exist on card-grid pages such as decade, year, undated-group, explorer-folder-group, or tags index pages.
+Selection does **not** exist on card-grid pages such as decade, year, undated-group, explorer-folder-group, tags index, or the new month day-calendar page.
 
 ### 11.2 Selection model
 
@@ -560,9 +603,171 @@ The implementation may use either a real checkbox input or a styled clickable el
 
 ---
 
-## 12. Lightbox behavior
+## 12. Day calendar view model
 
-### 12.1 Core behavior
+### 12.1 Intent
+
+The month page gains a secondary mode called **Day View**.
+
+This mode is calendar-like and visually similar in spirit to a month view in Google Calendar, but it is still a photo browser. It is not a scheduling system.
+
+### 12.2 Entry point
+
+The ordinary month thumbnail page at:
+
+```text
+/timeline/month/<year>/<month>
+```
+
+must include a visible control labeled either:
+
+- `Day View`
+- or `By Day`
+
+Preferred label: `Day View`
+
+Clicking that control takes the user to:
+
+```text
+/timeline/month/<year>/<month>/days
+```
+
+### 12.3 Scope
+
+Day View exists only for dated month pages in Timeline.
+
+No day-calendar mode is required for:
+
+- undated
+- tags
+- explorer
+- year pages
+- decade pages
+
+### 12.4 Source data
+
+Day View operates on the same filtered month set used by `/timeline/month/<year>/<month>`.
+
+Required filtering logic:
+
+- include only dated items where `_year == year and _month == month`
+- preserve the existing item order from `DB_CACHE` when building per-day manifests
+
+### 12.5 Grouping
+
+Group the filtered month items by `_date_key`.
+
+Each non-empty day bucket corresponds to one calendar day cell with photo content.
+
+### 12.6 Calendar grid
+
+Render the month as a 7-column calendar grid with day-of-week headers:
+
+- Sunday
+- Monday
+- Tuesday
+- Wednesday
+- Thursday
+- Friday
+- Saturday
+
+Use a normal month matrix with blank leading and trailing cells where needed.
+
+### 12.7 Day cell content
+
+For any calendar day that contains one or more photos, the cell must display all of the following:
+
+- day number
+- one representative thumbnail image
+- photo count, for example `18 photos`
+- up to 3 top tags from that day's items
+- a simple location-style label derived from tags, if available
+
+Representative thumbnail rule:
+
+- use the first photo in that day's bucket, preserving existing order
+- show `/thumbs/<sha1>.jpg`
+- if thumbnail is missing, fall back to opening the original image directly only if necessary; thumbnail-first is preferred
+
+Tag rule:
+
+- call `get_top_tags(day_items, limit=3)`
+- render up to 3 pills in the cell if space permits
+
+Location-style label rule:
+
+- call `get_day_location_label(day_items)`
+- if non-empty, show it as a short text line in the cell
+- if empty, omit the line
+
+### 12.8 Empty day cells
+
+Empty cells inside the current month must still show the day number, but no thumbnail and no metadata.
+
+Cells outside the month are blank placeholders.
+
+### 12.9 Click behavior
+
+Clicking any non-empty day cell must navigate to a dedicated day gallery route:
+
+```text
+/timeline/month/<year>/<month>/day/<day>
+```
+
+where `<day>` is zero-padded, for example `01`, `09`, `17`, `31`.
+
+Clicking an empty day cell does nothing.
+
+### 12.10 Day gallery route behavior
+
+The dedicated day route renders a normal **photo-grid page**, not a calendar.
+
+Required behavior:
+
+- filter dated items where `_year == year and _month == month and _day == day`
+- render photo grid mode
+- preserve current filtered order from `DB_CACHE`
+- manifest id = `main_gallery`
+- page title = `<MonthName> <day>, <Year>`
+- banner = `hero-timeline.png`
+- active tab = `timeline`
+- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / <day>` with links back
+
+This page is where the user can open the full-screen lightbox and cycle through that day's photos.
+
+### 12.11 Lightbox semantics for day route
+
+When the user opens the lightbox from the day gallery route, left/right navigation cycles only within that day's manifest.
+
+No cross-day navigation is required in the lightbox for this feature.
+
+### 12.12 Month page coexistence
+
+The ordinary month page remains the default page and keeps its existing photo-grid behavior.
+
+Day View is a secondary alternate view of the same month.
+
+The existing month page must **not** be replaced by the calendar.
+
+### 12.13 Day View control on day pages
+
+On the day-calendar route `/timeline/month/<year>/<month>/days`, include a visible control or link back to the ordinary month thumbnail page.
+
+Suggested labels:
+
+- `Grid View`
+- `Month Grid`
+- `Back to Month`
+
+Preferred label: `Grid View`
+
+On the ordinary month page, the `Day View` control should link to the calendar route.
+
+---
+
+## 13. Lightbox behavior
+
+### 13.1 Core behavior
 
 The backend uses one reusable full-screen lightbox overlay.
 
@@ -575,7 +780,7 @@ It must support:
 - ESC to close
 - toggle sidebar with the `E` key
 
-### 12.2 Manifest model
+### 13.2 Manifest model
 
 The frontend receives a JSON object named `manifests`.
 
@@ -589,7 +794,7 @@ The lightbox keeps two pieces of state:
 - current manifest id
 - current image index
 
-### 12.3 Displayed image
+### 13.3 Displayed image
 
 The lightbox `<img>` source is:
 
@@ -599,9 +804,9 @@ The lightbox `<img>` source is:
 
 Append a cache-busting query string timestamp after rotate operations.
 
-### 12.4 Sidebar contents
+### 13.4 Sidebar contents
 
-The baseline sidebar is a minimal shell, not a real metadata panel.
+The sidebar is a minimal shell, not a real metadata panel.
 
 It must at least display:
 
@@ -610,13 +815,13 @@ It must at least display:
 
 The sidebar may slide in and out from the right.
 
-No persistence is required for the notes area in this baseline version.
+No persistence is required for the notes area in this version.
 
 ---
 
-## 13. Context menu and rotate behavior
+## 14. Context menu and rotate behavior
 
-### 13.1 Right-click support
+### 14.1 Right-click support
 
 A custom context menu must appear on right-click for:
 
@@ -628,7 +833,7 @@ The menu still only needs two actions:
 - Rotate Right (90)
 - Rotate Left (270)
 
-### 13.1.1 Selection-aware menu targeting
+### 14.1.1 Selection-aware menu targeting
 
 The right-click menu must become selection-aware on photo-grid pages.
 
@@ -636,11 +841,11 @@ Required behavior:
 
 - if **two or more** thumbnails are currently selected, right-clicking any thumbnail opens the existing custom menu and the selected operation applies to **all currently selected SHA1s**
 - if **zero or one** thumbnail is currently selected, right-clicking a thumbnail behaves exactly like the current baseline and targets only the thumbnail under the pointer
-- if the lightbox is open and the user right-clicks the lightbox image, the current baseline single-image behavior is preserved; lightbox right-click does not need batch behavior in this feature
+- if the lightbox is open and the user right-clicks the lightbox image, the current single-image behavior is preserved; lightbox right-click does not need batch behavior in this feature
 
 This rule preserves baseline behavior for ordinary use while enabling batch rotate only when there is a meaningful current selection.
 
-### 13.2 Rotate endpoint
+### 14.2 Rotate endpoint
 
 Preserve the existing endpoint:
 
@@ -679,7 +884,7 @@ Selection-aware endpoint semantics:
 - otherwise rotate only the route SHA1
 - the route SHA1 remains required for backward compatibility with the baseline frontend
 
-### 13.3 Rotate lookup
+### 14.3 Rotate lookup
 
 For each target SHA1, find `rel_fqn` from the `media` table.
 
@@ -695,7 +900,7 @@ Before processing, normalize the target list by:
 - removing duplicates while preserving order
 - falling back to `[route_sha1]` if no usable batch list was supplied
 
-### 13.4 Rotation semantics
+### 14.4 Rotation semantics
 
 For each target SHA1:
 
@@ -708,7 +913,7 @@ For each target SHA1:
 
 Recommended quality: 95.
 
-### 13.5 Thumbnail regeneration after rotate
+### 14.5 Thumbnail regeneration after rotate
 
 After rotating each original file, regenerate `_thumbs/<sha1>.jpg` from the updated original.
 
@@ -719,7 +924,7 @@ Use the current thumbnail logic:
 - resize to fit within 400x400 using `thumbnail((400,400))`
 - save as RGB JPEG
 
-### 13.6 Front-end refresh behavior after rotate
+### 14.6 Front-end refresh behavior after rotate
 
 After successful rotate on a photo-grid page:
 
@@ -743,27 +948,28 @@ For backward compatibility, if only one image was rotated, `updated` may contain
 
 ---
 
-## 14. Regression constraints for this feature delta
+## 15. Regression constraints for the day-view feature delta
 
-The multi-select feature must **not** change any of the following baseline behaviors:
+The day-view feature must **not** change any of the following baseline behaviors:
 
-- Timeline grouping and route structure
+- Timeline decade, year, and month grouping rules
+- Existing month page route and photo-grid behavior
 - Undated grouping and route structure
 - Explorer grouping and route structure
 - Tags grouping and route structure
 - Composite card generation and click-to-lightbox behavior
-- Lightbox navigation with left/right arrows
-- Existing single-image right-click rotate behavior when no meaningful selection exists
+- Lightbox navigation within a manifest
+- Existing single-image and multi-select rotate behavior on photo-grid pages
 - Existing banner images, dark theme, and page layout structure
-- Existing database schema assumptions, other than accepting an optional `sha1_list` field in rotate requests
+- Existing database schema assumptions
 
-No delete, tag edit, date edit, or persistence of selection state is part of this feature.
+Day View is additive. It is not a replacement for the month gallery page.
 
 ---
 
-## 15. Routes and page behavior
+## 16. Routes and page behavior
 
-### 14.1 `/` and `/timeline`
+### 16.1 `/` and `/timeline`
 
 These are the same page.
 
@@ -781,7 +987,7 @@ Behavior:
 - active nav tab = `timeline`
 - breadcrumb text = `Decades`
 
-### 14.2 `/timeline/decade/<decade>`
+### 16.2 `/timeline/decade/<decade>`
 
 Behavior:
 
@@ -795,7 +1001,7 @@ Behavior:
 - active tab = `timeline`
 - breadcrumb = `Timeline / <decade>` where `Timeline` links to `/timeline`
 
-### 14.3 `/timeline/year/<year>`
+### 16.3 `/timeline/year/<year>`
 
 Behavior:
 
@@ -811,7 +1017,7 @@ Behavior:
 - active tab = `timeline`
 - breadcrumb = `Timeline / <decade> / <year>` with links back
 
-### 14.4 `/timeline/month/<year>/<month>`
+### 16.4 `/timeline/month/<year>/<month>`
 
 Behavior:
 
@@ -821,11 +1027,42 @@ Behavior:
 - preserve current order from `DB_CACHE`
 - manifest id = `main_gallery`
 - page title = `<MonthName> <Year>`
+- include a visible `Day View` control linking to `/timeline/month/<year>/<month>/days`
 - banner = `hero-timeline.png`
 - active tab = `timeline`
 - breadcrumb = `Timeline / <decade> / <year> / <MonthName>` with links back
 
-### 14.5 `/undated`
+### 16.5 `/timeline/month/<year>/<month>/days`
+
+Behavior:
+
+- load cache
+- filter dated items where `_year == year and _month == month`
+- group filtered items by `_date_key`
+- build a Sunday-first calendar matrix for the target month
+- render day calendar mode, not photo grid mode
+- page title = `<MonthName> <Year> · Day View`
+- include a visible `Grid View` control linking back to `/timeline/month/<year>/<month>`
+- banner = `hero-timeline.png`
+- active tab = `timeline`
+- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / Day View` with links back
+
+### 16.6 `/timeline/month/<year>/<month>/day/<day>`
+
+Behavior:
+
+- load cache
+- filter dated items where `_year == year and _month == month and _day == day`
+- render photo grid mode
+- preserve current filtered order from `DB_CACHE`
+- manifest id = `main_gallery`
+- page title = `<MonthName> <day>, <Year>`
+- include a visible `Day View` control linking back to `/timeline/month/<year>/<month>/days`
+- banner = `hero-timeline.png`
+- active tab = `timeline`
+- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / <day>` with links back
+
+### 16.7 `/undated`
 
 Behavior:
 
@@ -838,7 +1075,7 @@ Behavior:
 - active tab = `undated`
 - breadcrumb = `Undated`
 
-### 14.6 `/undated/<folder>`
+### 16.8 `/undated/<folder>`
 
 Behavior:
 
@@ -850,7 +1087,7 @@ Behavior:
 - active tab = `undated`
 - breadcrumb = `Undated / <folder>` where `Undated` links to `/undated`
 
-### 14.7 `/folder` and `/folder/<path:sub>`
+### 16.9 `/folder` and `/folder/<path:sub>`
 
 This is the Explorer view.
 
@@ -884,7 +1121,7 @@ Page presentation:
 
 Note: even though the nav text says `EXPLORER`, the active-tab identifier in the working script is `file`. Preserve behavior or implement equivalent highlighting logic.
 
-### 14.8 `/tags`
+### 16.10 `/tags`
 
 Behavior:
 
@@ -899,7 +1136,7 @@ Behavior:
 - active tab = `tags`
 - breadcrumb = `All Tags`
 
-### 14.9 `/tags/<tag>`
+### 16.11 `/tags/<tag>`
 
 Behavior:
 
@@ -911,7 +1148,7 @@ Behavior:
 - active tab = `tags`
 - breadcrumb = `Tags / <tag>` where `Tags` links to `/tags`
 
-### 14.10 `/media/<path:p>`
+### 16.12 `/media/<path:p>`
 
 Serve the original file from disk.
 
@@ -924,28 +1161,29 @@ Behavior:
 - if file exists, return `send_file(...)`
 - else return 404 text `Not Found`
 
-### 14.11 `/thumbs/<f>`
+### 16.13 `/thumbs/<f>`
 
 Serve a thumbnail file directly from `THUMB_DIR`.
 
-### 14.12 `/composite/<h>.jpg`
+### 16.14 `/composite/<h>.jpg`
 
 Serve a composite JPEG directly from `COMPOSITE_DIR`.
 
-### 14.13 `/assets/<path:f>`
+### 16.15 `/assets/<path:f>`
 
 Serve banner images and other static UI assets from `ASSETS_DIR`.
 
 ---
 
-## 16. HTML template requirements
+## 17. HTML template requirements
 
-A single `render_template_string(...)` template is sufficient for the baseline.
+A single `render_template_string(...)` template is sufficient for this version.
 
-The template must be capable of rendering both:
+The template must be capable of rendering all three modes:
 
 - card-grid pages
 - photo-grid pages
+- day-calendar pages
 
 It must accept these conceptual inputs:
 
@@ -956,9 +1194,10 @@ It must accept these conceptual inputs:
 - `breadcrumb`
 - `cards` optional
 - `photos` optional
+- `day_calendar` optional
 - `manifests`
 
-### 15.1 Card-grid rendering
+### 17.1 Card-grid rendering
 
 When `cards` exists:
 
@@ -967,7 +1206,7 @@ When `cards` exists:
 - card body shows title, subtitle, tag pills
 - tag pills link to `/tags/<tag>`
 
-### 15.2 Photo-grid rendering
+### 17.2 Photo-grid rendering
 
 When `photos` exists:
 
@@ -975,13 +1214,26 @@ When `photos` exists:
 - each tile uses `/thumbs/<sha1>.jpg`
 - each tile must attach its manifest index and SHA1 for lightbox and rotate
 
+### 17.3 Day-calendar rendering
+
+When `day_calendar` exists:
+
+- render a month-style calendar grid with 7 columns
+- render day-of-week headings across the top
+- render one box per day cell
+- day cells containing media should be visually distinct from empty cells
+- each non-empty day cell should show one thumbnail, count text, optional location-style label, and up to 3 tag pills
+- the whole non-empty day cell should be clickable and navigate to the day route
+
+The visual style should feel calendar-like, not like a standard card grid.
+
 ---
 
-## 16. Front-end JavaScript requirements
+## 18. Front-end JavaScript requirements
 
 Implement JavaScript sufficient to reproduce current interaction behavior.
 
-### 16.1 Required functions
+### 18.1 Required functions
 
 Equivalent logic is required for:
 
@@ -994,22 +1246,31 @@ Equivalent logic is required for:
 - `handleContextMenu(event, sha1)`
 - `rotateImage(degrees)`
 
-### 16.2 Keyboard behavior
+### 18.2 Keyboard behavior
 
 Global key handling:
 
-- `Escape` closes the lightbox
+- `Escape` clears current selection if any selection exists on the current photo-grid page
+- otherwise `Escape` closes the lightbox
 - `ArrowRight` advances if lightbox active
 - `ArrowLeft` goes back if lightbox active
 - `e` toggles sidebar if lightbox active or globally, matching existing loose behavior
 
-### 16.3 Context menu dismissal
+### 18.3 Context menu dismissal
 
 Clicking elsewhere hides the custom context menu.
 
+### 18.4 Day calendar JS
+
+No heavy JavaScript behavior is required for day calendar mode.
+
+Simple anchor navigation is sufficient.
+
+No drag/drop, no inline expansion, and no popover is required.
+
 ---
 
-## 17. Sorting and ordering rules
+## 19. Sorting and ordering rules
 
 These rules matter and must be reproduced.
 
@@ -1017,6 +1278,8 @@ These rules matter and must be reproduced.
 - Timeline decades sorted descending
 - Timeline years sorted descending
 - Timeline months sorted ascending by month code
+- Day calendar rows follow a normal Sunday-first month matrix
+- Per-day gallery items preserve their filtered order from the base query
 - Undated folder groups sorted alphabetically
 - Explorer subfolders sorted alphabetically
 - Tags index sorted alphabetically by tag name
@@ -1024,23 +1287,25 @@ These rules matter and must be reproduced.
 
 ---
 
-## 18. Error handling and tolerance
+## 20. Error handling and tolerance
 
-The baseline server should be forgiving.
+The server should be forgiving.
 
 - Missing assets should not crash the server
 - Missing thumbnails should fall back where possible in composite generation
 - Individual corrupt images in composites should be skipped, not fatal
 - Missing media path on `/media/...` should return 404, not crash
 - Missing SHA1 on rotate should return JSON error 404
+- A month day-view route with zero photos is still allowed and should render an empty calendar for that month
+- A day route with zero photos may render an empty photo grid or a friendly empty-state message
 
 ---
 
-## 19. Baseline acceptance criteria
+## 21. Acceptance criteria
 
 A backend implementation is considered correct if all of the following are true.
 
-### 19.1 Timeline
+### 21.1 Timeline
 
 - `/timeline` shows one composite card per decade
 - clicking a decade card opens the year list
@@ -1048,68 +1313,80 @@ A backend implementation is considered correct if all of the following are true.
 - clicking a month card opens a gallery of thumbnails
 - clicking a composite tile opens the corresponding image in the lightbox
 
-### 19.2 Undated
+### 21.2 Undated
 
 - `/undated` groups undated images by immediate parent folder
 - clicking a group opens a gallery of those images
 
-### 19.3 Explorer
+### 21.3 Explorer
 
 - `/folder` shows direct child subfolders as cards and direct files as thumbnails
 - drilling into subfolders works recursively
 
-### 19.4 Tags
+### 21.4 Tags
 
 - `/tags` shows one card per available tag
 - `/tags/<tag>` shows only images with that tag
 
-### 19.5 Lightbox
+### 21.5 Lightbox
 
 - opens from any gallery
 - arrow keys navigate
 - ESC closes
 - `E` toggles sidebar
 
-### 19.6 Rotate
+### 21.6 Rotate
 
 - right-click thumbnail or lightbox image shows rotate menu
 - rotation updates original file on disk
 - thumbnail refreshes immediately
 
-### 19.7 Visual style
+### 21.7 Day View
+
+- `/timeline/month/<year>/<month>` shows a visible `Day View` control
+- `/timeline/month/<year>/<month>/days` renders a month-style calendar
+- each day with photos shows one thumbnail and a photo count
+- non-empty day cells display up to 3 tags
+- non-empty day cells display a short location-style label when available from tags
+- clicking a non-empty day cell opens `/timeline/month/<year>/<month>/day/<day>`
+- the day route renders a normal photo grid for only that day's items
+- opening the lightbox from the day route lets the user cycle through only that day's photos
+
+### 21.8 Visual style
 
 - dark theme
 - sticky nav
-- square composite cards
+- square composite cards where applicable
 - banner image per major page
-- cards and grids broadly match the current existing UI
+- cards, grids, and day calendar broadly match the existing UI direction
 
 ---
 
-## 20. Implementation notes for future specs
+## 22. Acceptance tests for the day-view feature delta
 
-When extending this system later, the next spec should be written as a delta against this baseline, not as a replacement.
+1. Open `/timeline/month/2026/03`; verify that a visible `Day View` link or button appears.
+2. Click `Day View`; verify navigation to `/timeline/month/2026/03/days`.
+3. Verify that the page shows a Sunday-first calendar month layout for March 2026.
+4. Verify that empty days show only the day number.
+5. Verify that a day with photos shows one thumbnail, a count such as `12 photos`, and up to 3 tag pills.
+6. Verify that if the day has tags, the first top tag appears as a short location-style label.
+7. Click a non-empty day cell; verify navigation to `/timeline/month/2026/03/day/18` or equivalent zero-padded day route.
+8. Verify that the day route shows only photos from that date.
+9. Open the lightbox from the day route and use left/right arrows; verify that navigation stays within that day's manifest only.
+10. Click `Grid View` from the day-calendar page; verify return to the ordinary month gallery.
+11. Verify that Undated, Explorer, and Tags pages are unchanged.
+12. Verify that the existing rotate and multi-select behavior on ordinary photo-grid pages still works.
+
+---
+
+## 23. Implementation notes for future specs
+
+When extending this system later, the next spec should be written as a delta against this version, not as a replacement.
 
 Any future feature spec should explicitly state one of:
 
-- `NEW`: feature does not exist in baseline
-- `CHANGE`: replace a baseline behavior
-- `KEEP`: baseline behavior remains unchanged
+- `NEW`: feature does not exist in current version
+- `CHANGE`: replace a current behavior
+- `KEEP`: current behavior remains unchanged
 
 That prevents the next coding LLM from accidentally rebuilding the app around aspirational notes instead of the working current system.
-
-
-
----
-
-## 17. Acceptance tests for multi-select
-
-1. Open a photo-grid page such as `/timeline/month/2005/12`; each thumbnail tile shows a checkbox-style selection affordance.
-2. Click the checkbox on two thumbnails; both become visibly selected and the lightbox does not open.
-3. Press `Escape`; both selections clear and no route change occurs.
-4. Select two thumbnails, then right-click one of the selected tiles and choose Rotate Right; both thumbnails refresh after the operation.
-5. Select two thumbnails, then right-click an unselected tile; the selected set still determines the batch target if two or more images are selected.
-6. With no selection, right-click a thumbnail and rotate it; behavior matches the original single-image flow.
-7. Navigate from one photo-grid page to another; the new page starts with no selection.
-8. Open the lightbox and right-click the current lightbox image; single-image rotate still works as before.
-9. Card-grid pages such as `/timeline` or `/timeline/decade/2000s` do not show selection checkboxes.
