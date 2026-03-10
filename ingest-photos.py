@@ -5,59 +5,42 @@ import hashlib
 import time
 import re
 from datetime import datetime
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 # --- CONFIGURATION ---
-# Add all high-volume source folders to the SOURCES list.
-# DEST_ROOT is the target directory for the managed archive.
 SOURCES = [r"e:\LegacyTransfer\TransferTest"]
 DEST_ROOT = r"C:\LifeArchive"
-
-# Database and Folder paths
+-
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
+
+# Progress / durability tuning
 LOG_INTERVAL = 100
+HEARTBEAT_SECONDS = 10.0
 COMMIT_INTERVAL = 100
 
-# Minimum image dimensions for accepted source assets.
-# This filters out tiny source thumbnails, icons, and other noise.
+# Minimum source image size to accept into the archive
 MIN_WIDTH = 500
 MIN_HEIGHT = 300
 
 # GLOBAL SETTINGS
-# Disabling the decompression bomb limit allows processing of massive panoramas/scans.
 Image.MAX_IMAGE_PIXELS = None
 
-# Ensure environment is ready
 os.makedirs(THUMB_DIR, exist_ok=True)
 
 
-### ---------------------------------------------------------------------------
-### LAYER: IO_ENGINE
-### ---------------------------------------------------------------------------
-
-
-def get_sha1(file_path):
-    """
-    Calculates the SHA1 hash of a file to provide a unique fingerprint.
-    Input: file_path (str)
-    Output: hex digest string (str)
-    """
+def get_sha1(file_path: str) -> str:
     h = hashlib.sha1()
     with open(file_path, 'rb') as f:
-        while chunk := f.read(8192):
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
             h.update(chunk)
     return h.hexdigest()
 
 
-
-def get_unique_dest_path(base_dir, filename, sha1):
-    """
-    Implements the Collision Resolver. If a different file shares a name,
-    appends a numerical suffix until a unique slot is found.
-    Input: base_dir, filename, sha1
-    Output: finalized unique file path
-    """
+def get_unique_dest_path(base_dir: str, filename: str, sha1: str) -> str:
     name, ext = os.path.splitext(filename)
     counter = 0
     while True:
@@ -67,49 +50,32 @@ def get_unique_dest_path(base_dir, filename, sha1):
         if not os.path.exists(candidate_path):
             return candidate_path
 
-        if get_sha1(candidate_path) == sha1:
-            return candidate_path
+        try:
+            if get_sha1(candidate_path) == sha1:
+                return candidate_path
+        except Exception:
+            pass
 
         counter += 1
 
 
-
-def generate_thumbnail(image_path, thumb_path):
-    """
-    Generate a UI thumbnail while honoring EXIF orientation.
-    This prevents portrait photos from being baked out sideways/upside-down
-    when the original relies on EXIF orientation metadata.
-    """
+def generate_thumbnail(image_path: str, thumb_path: str) -> None:
     with Image.open(image_path) as img:
         img = ImageOps.exif_transpose(img)
         img.thumbnail((400, 400))
         img.convert("RGB").save(thumb_path, "JPEG", quality=85)
 
 
-
-def probe_image_dimensions(file_path):
-    """
-    Returns (width, height) for readable images, otherwise None.
-    This is used to reject tiny source thumbnails and to skip unreadable files.
-    """
+def safe_datetime_from_timestamp(ts):
     try:
-        with Image.open(file_path) as img:
-            return img.size
-    except Exception:
+        if ts is None or ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts)
+    except (OSError, OverflowError, ValueError):
         return None
 
 
-### ---------------------------------------------------------------------------
-### LAYER: METADATA_ENGINE
-### ---------------------------------------------------------------------------
-
-
 def get_gps_coordinates(exif_data):
-    """
-    Verifies and extracts GPS coordinates from EXIF.
-    Input: exif_data dictionary
-    Output: (lat, lon) tuple if valid, else None
-    """
     if not exif_data:
         return None
 
@@ -141,30 +107,7 @@ def get_gps_coordinates(exif_data):
     return None
 
 
-
-def safe_datetime_from_timestamp(ts):
-    """
-    Convert a filesystem timestamp into a datetime safely.
-    Returns None for invalid, zero, negative, or platform-rejected values.
-    """
-    try:
-        if ts is None or ts <= 0:
-            return None
-        return datetime.fromtimestamp(ts)
-    except (OSError, OverflowError, ValueError):
-        return None
-
-
-
-def resolve_file_date(file_path, rel_path):
-    """
-    Implements the Date Resolution Algorithm Hierarchy.
-    GPS Golden Signal -> Undated Override -> Year Extraction -> Date Assembly.
-
-    rel_path must be the full archive-relative path context, including the
-    source base directory, so that paths like Topaz-Undated/... correctly
-    trigger the undated override.
-    """
+def resolve_file_date(file_path: str, archive_rel_path: str):
     exif_data = None
     try:
         with Image.open(file_path) as img:
@@ -183,11 +126,11 @@ def resolve_file_date(file_path, rel_path):
             except Exception:
                 pass
 
-    if 'undated' in rel_path.lower():
+    if 'undated' in archive_rel_path.lower():
         return "0000-00-00 00:00:00", "Path Override: Undated"
 
     year_regex = r"(?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)"
-    path_parts = rel_path.split(os.sep)
+    path_parts = archive_rel_path.split(os.sep)
     target_year = None
     for part in reversed(path_parts):
         match = re.search(year_regex, part)
@@ -198,29 +141,27 @@ def resolve_file_date(file_path, rel_path):
     internal_dt = None
     source_label = "Unknown"
 
+    try:
+        mtime = os.path.getmtime(file_path)
+        internal_dt = safe_datetime_from_timestamp(mtime)
+        if internal_dt is not None:
+            source_label = "File Modification"
+    except OSError:
+        internal_dt = None
+
     if exif_data and (36867 in exif_data):
         try:
-            candidate = datetime.strptime(exif_data[36867], '%Y:%m:%d %H:%M:%S')
-            internal_dt = candidate
-            source_label = "EXIF"
+            exif_dt = datetime.strptime(exif_data[36867], '%Y:%m:%d %H:%M:%S')
+            if 1950 <= exif_dt.year <= 2026:
+                internal_dt = exif_dt
+                source_label = "EXIF"
         except Exception:
             pass
 
-    if internal_dt is None:
-        try:
-            mtime = os.path.getmtime(file_path)
-            internal_dt = safe_datetime_from_timestamp(mtime)
-            if internal_dt is not None:
-                source_label = "File Modification"
-        except OSError:
-            internal_dt = None
-
     if target_year:
-        if internal_dt is not None:
-            if internal_dt.year == target_year:
-                return internal_dt.strftime('%Y-%m-%d %H:%M:%S'), source_label
-            return f"{target_year}-01-01 00:00:00", f"Path-Year Overwrite ({source_label} mismatched)"
-        return f"{target_year}-01-01 00:00:00", "Path-Year Fallback"
+        if internal_dt is not None and internal_dt.year == target_year:
+            return internal_dt.strftime('%Y-%m-%d %H:%M:%S'), source_label
+        return f"{target_year}-01-01 00:00:00", f"Path-Year Overwrite ({source_label} mismatched)"
 
     if internal_dt is not None:
         return internal_dt.strftime('%Y-%m-%d %H:%M:%S'), source_label
@@ -228,15 +169,8 @@ def resolve_file_date(file_path, rel_path):
     return "0000-00-00 00:00:00", "Date Error Fallback"
 
 
-### ---------------------------------------------------------------------------
-### LAYER: DATA_PERSISTENCE
-### ---------------------------------------------------------------------------
-
-
 def init_db():
-    """Ensures the DB and essential columns exist without wiping data."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('''CREATE TABLE IF NOT EXISTS media (
         sha1 TEXT PRIMARY KEY,
         rel_fqn TEXT,
@@ -252,136 +186,189 @@ def init_db():
     conn.close()
 
 
+def format_elapsed(seconds: float) -> str:
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def is_supported_image_extension(filename: str) -> bool:
+    return filename.lower().endswith((".jpg", ".jpeg", ".png"))
+
+
+def inspect_source_image(src_path: str):
+    try:
+        with Image.open(src_path) as img:
+            width, height = img.size
+            return True, width, height, None
+    except (UnidentifiedImageError, OSError, ValueError) as e:
+        return False, None, None, str(e)
+
+
+def print_progress(start_time, total_seen, total_new, total_healed, skipped, tiny_skipped,
+                   unreadable_skipped, warnings_count, current_path=None, checkpoint=False):
+    elapsed = time.time() - start_time
+    rate = total_seen / elapsed if elapsed > 0 else 0.0
+    prefix = "[Checkpoint]" if checkpoint else "[Progress]"
+    msg = (
+        f"\r  {prefix} Elapsed: {format_elapsed(elapsed)} | "
+        f"Seen: {total_seen} | New: {total_new} | Healed: {total_healed} | "
+        f"Skipped: {skipped} | Tiny: {tiny_skipped} | Unreadable: {unreadable_skipped} | "
+        f"Warnings: {warnings_count} | {rate:.1f} files/sec"
+    )
+    if current_path:
+        trimmed = current_path
+        if len(trimmed) > 110:
+            trimmed = "..." + trimmed[-107:]
+        msg += f" | Current: {trimmed}"
+    print(msg, end="", flush=True)
+    if checkpoint:
+        print("", flush=True)
+
 
 def run_ingest():
     init_db()
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('PRAGMA journal_mode=WAL')
     start_time = time.time()
+    last_log_time = start_time
+    since_commit = 0
 
-    total_new, total_healed, skipped, warnings = 0, 0, 0, 0
-    tiny_skipped, unreadable_skipped = 0, 0
-    year_regex = r"(?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)"
-    pending_writes = 0
+    total_new = 0
+    total_healed = 0
+    skipped = 0
+    tiny_skipped = 0
+    unreadable_skipped = 0
+    warnings_count = 0
+    total_seen = 0
 
-    print("--- STARTING ROBUST INGEST (V4.1 Checkpointed + Size Filter) ---")
+    print("--- STARTING ROBUST INGEST (V4.2 Heartbeat + Checkpointed + Size Filter) ---")
 
-    for src in SOURCES:
-        if not os.path.exists(src):
-            continue
-        source_base = os.path.basename(src)
+    try:
+        for src in SOURCES:
+            if not os.path.exists(src):
+                continue
 
-        for root, _, files in os.walk(src):
-            for f in files:
-                if not f.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    continue
+            source_base = os.path.basename(src)
 
-                src_path = os.path.join(root, f)
+            for root, _, files in os.walk(src):
+                for f in files:
+                    src_path = os.path.join(root, f)
 
-                dims = probe_image_dimensions(src_path)
-                if dims is None:
-                    warnings += 1
-                    unreadable_skipped += 1
-                    continue
+                    if not is_supported_image_extension(f):
+                        continue
 
-                width, height = dims
-                if width < MIN_WIDTH or height < MIN_HEIGHT:
-                    tiny_skipped += 1
-                    continue
+                    total_seen += 1
+                    now = time.time()
+                    if now - last_log_time >= HEARTBEAT_SECONDS:
+                        print_progress(start_time, total_seen, total_new, total_healed, skipped,
+                                       tiny_skipped, unreadable_skipped, warnings_count, src_path)
+                        last_log_time = now
 
-                sha1 = get_sha1(src_path)
+                    readable, width, height, err = inspect_source_image(src_path)
+                    if not readable:
+                        unreadable_skipped += 1
+                        warnings_count += 1
+                        continue
 
-                existing = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
-                if existing:
-                    if os.path.exists(os.path.join(DEST_ROOT, existing[0])):
-                        skipped += 1
-                    else:
-                        rel_dir = os.path.relpath(root, src)
-                        dest_dir = os.path.join(DEST_ROOT, source_base, rel_dir)
-                        os.makedirs(dest_dir, exist_ok=True)
-                        dest_path = get_unique_dest_path(dest_dir, f, sha1)
-                        shutil.copy2(src_path, dest_path)
-                        new_rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
-                        conn.execute("UPDATE media SET rel_fqn = ? WHERE sha1 = ?", (new_rel_fqn, sha1))
-                        total_healed += 1
-                        pending_writes += 1
-                else:
+                    if width < MIN_WIDTH or height < MIN_HEIGHT:
+                        tiny_skipped += 1
+                        continue
+
+                    sha1 = get_sha1(src_path)
+                    existing = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
+                    if existing:
+                        existing_full_path = os.path.join(DEST_ROOT, existing[0])
+                        if os.path.exists(existing_full_path):
+                            skipped += 1
+                        else:
+                            rel_dir = os.path.relpath(root, src)
+                            dest_dir = os.path.join(DEST_ROOT, source_base, rel_dir)
+                            os.makedirs(dest_dir, exist_ok=True)
+                            dest_path = get_unique_dest_path(dest_dir, f, sha1)
+                            shutil.copy2(src_path, dest_path)
+                            new_rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
+                            conn.execute("UPDATE media SET rel_fqn = ? WHERE sha1 = ?", (new_rel_fqn, sha1))
+                            total_healed += 1
+                            since_commit += 1
+                        if total_seen % LOG_INTERVAL == 0:
+                            print_progress(start_time, total_seen, total_new, total_healed, skipped,
+                                           tiny_skipped, unreadable_skipped, warnings_count, src_path)
+                            last_log_time = time.time()
+                        if since_commit >= COMMIT_INTERVAL:
+                            conn.commit()
+                            since_commit = 0
+                            print_progress(start_time, total_seen, total_new, total_healed, skipped,
+                                           tiny_skipped, unreadable_skipped, warnings_count, src_path, checkpoint=True)
+                            last_log_time = time.time()
+                        continue
+
                     rel_dir = os.path.relpath(root, src)
                     dest_dir = os.path.join(DEST_ROOT, source_base, rel_dir)
                     os.makedirs(dest_dir, exist_ok=True)
                     dest_path = get_unique_dest_path(dest_dir, f, sha1)
 
-                    if not os.path.exists(dest_path):
-                        shutil.copy2(src_path, dest_path)
+                    shutil.copy2(src_path, dest_path)
 
                     archive_rel_path = os.path.join(source_base, rel_dir)
                     try:
                         final_dt, source_label = resolve_file_date(dest_path, archive_rel_path)
-                    except Exception as e:
-                        warnings += 1
-                        print(f"\n[WARN] Date resolution failed for {dest_path}: {e}")
+                    except Exception:
                         final_dt, source_label = "0000-00-00 00:00:00", "Date Error Fallback"
+                        warnings_count += 1
 
                     rel_fqn = os.path.relpath(dest_path, DEST_ROOT)
 
-                    path_parts = [source_base] + rel_dir.split(os.sep)
-                    clean_tags = []
+                    path_parts = [p for p in rel_fqn.split(os.sep)[:-1] if p not in ('.', '')]
+                    path_tags_list = []
                     for part in path_parts:
-                        if not part or part == ".":
-                            continue
-                        clean = re.sub(year_regex, "", part)
-                        clean = clean.replace("_", " ").replace("-", " ").strip()
-                        if clean:
-                            clean_tags.append(clean.title())
-                    path_tags = ",".join(clean_tags)
+                        if not re.fullmatch(r"(?<!\d)(19[5-9]\d|20[0-2]\d)(?!\d)", part):
+                            path_tags_list.append(part)
+                    path_tags = ",".join(path_tags_list)
 
                     conn.execute(
-                        """INSERT OR IGNORE INTO media
+                        """INSERT INTO media
                         (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source)
                         VALUES (?, ?, ?, ?, ?, ?)""",
-                        (sha1, rel_fqn, os.path.basename(dest_path), path_tags, final_dt, source_label)
+                        (sha1, rel_fqn, os.path.basename(dest_path), path_tags, final_dt, source_label),
                     )
+                    since_commit += 1
 
                     t_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
                     if not os.path.exists(t_path):
                         try:
                             generate_thumbnail(dest_path, t_path)
                         except Exception:
-                            warnings += 1
+                            warnings_count += 1
 
                     total_new += 1
-                    pending_writes += 1
+                    if total_seen % LOG_INTERVAL == 0:
+                        print_progress(start_time, total_seen, total_new, total_healed, skipped,
+                                       tiny_skipped, unreadable_skipped, warnings_count, src_path)
+                        last_log_time = time.time()
 
-                processed = total_new + skipped + total_healed + tiny_skipped + unreadable_skipped
-                if pending_writes >= COMMIT_INTERVAL:
-                    conn.commit()
-                    pending_writes = 0
-
-                if processed % LOG_INTERVAL == 0:
-                    if pending_writes > 0:
+                    if since_commit >= COMMIT_INTERVAL:
                         conn.commit()
-                        pending_writes = 0
-                    rate = processed / max(0.001, (time.time() - start_time))
-                    print(
-                        f"\r  [Progress] New: {total_new} | Healed: {total_healed} | "
-                        f"Skipped: {skipped} | Tiny: {tiny_skipped} | Unreadable: {unreadable_skipped} | "
-                        f"Warnings: {warnings} | {rate:.1f} files/sec",
-                        end="",
-                        flush=True,
-                    )
+                        since_commit = 0
+                        print_progress(start_time, total_seen, total_new, total_healed, skipped,
+                                       tiny_skipped, unreadable_skipped, warnings_count, src_path, checkpoint=True)
+                        last_log_time = time.time()
 
-    conn.commit()
-    conn.close()
+        if since_commit > 0:
+            conn.commit()
+    finally:
+        conn.close()
 
     duration = time.time() - start_time
-    print("\n\n--- INGEST COMPLETE ---")
+    print(f"\n\n--- INGEST COMPLETE ---")
     print(f"Duration: {duration:.1f}s")
     print(f"New added: {total_new}")
     print(f"Files healed: {total_healed}")
     print(f"Duplicates skipped: {skipped}")
     print(f"Tiny images skipped: {tiny_skipped}")
     print(f"Unreadable images skipped: {unreadable_skipped}")
-    print(f"Warnings: {warnings}")
+    print(f"Warnings: {warnings_count}")
 
 
 if __name__ == "__main__":
