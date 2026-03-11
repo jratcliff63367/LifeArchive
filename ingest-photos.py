@@ -18,7 +18,7 @@ THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
 LOG_INTERVAL = 100
 HEARTBEAT_SECONDS = 10.0
 COMMIT_INTERVAL = 100
-+
+
 # Minimum source image size to accept into the archive
 MIN_WIDTH = 500
 MIN_HEIGHT = 300

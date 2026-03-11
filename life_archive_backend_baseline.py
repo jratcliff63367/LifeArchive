@@ -775,7 +775,6 @@ HTML_TEMPLATE = r"""
             if (!sha1List || sha1List.length === 0) return;
             const endpoint = target === 'trash' ? '/api/move_to_trash' : '/api/move_to_stash';
             const label = target === 'trash' ? 'trash' : 'stash';
-            if (!confirm(`Move ${sha1List.length} image(s) to ${label}?`)) return;
 
             fetch(endpoint, {
                 method: 'POST',
