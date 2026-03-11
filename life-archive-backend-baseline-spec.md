@@ -1,19 +1,24 @@
 # Life Archive Backend Technical Specification
 
-Version: 1.2  
-Status: Baseline backend plus feature deltas  
-Purpose: This spec describes the current backend behavior that must be reproduced, using the current SQLite database and archive layout produced by the ingestor. It intentionally stays close to the existing backend, but now adds two bounded feature deltas:
+Version: 1.3  
+Status: Current backend behavior plus next approved selection-management features  
+Purpose: This spec is the canonical contract for reproducing the **current working backend** and then extending it with the next bounded feature set: **Select All**, **Move to Trash**, **Move to Stash**, and **Empty Trash**.
 
-1. multi-select on photo-grid pages with batch application of the existing rotate actions
-2. a by-day calendar view reachable from a month page
+This spec reflects the current backend represented by the latest working script, including:
+- Timeline views: decade → year → month grid → day calendar → day gallery/lightbox
+- Undated
+- Explorer
+- Tags
+- Photo-grid multi-select with checkbox overlays and batch rotate
+- Lightbox and current sidebar shell
 
-Any feature not explicitly described here is out of scope.
+It also adds the next requested feature set, but does **not** yet introduce any other roadmap items.
 
 ---
 
 ## 1. Objective
 
-Build a Flask-based local web server that reproduces the current working "Life Archive" backend.
+Build a Flask-based local web server that reproduces the current working "Life Archive" backend and adds selection-management operations for file triage.
 
 The backend must:
 
@@ -21,17 +26,27 @@ The backend must:
 - Serve original media files from the managed archive root.
 - Serve cached thumbnails from `_thumbs`.
 - Generate and cache 4x4 composite card images in `_thumbs/_composites`.
-- Provide four top-level views:
+- Provide top-level views:
   - Timeline
   - Undated
   - Explorer
   - Tags
-- Provide a full-screen lightbox with keyboard navigation.
-- Provide a right-click context menu for rotate-right and rotate-left.
+- Provide timeline drilldown pages:
+  - decade view
+  - year view
+  - month grid view
+  - month day-calendar view
+  - day gallery/lightbox view
+- Provide photo-grid multi-select with checkboxes.
+- Provide Select All behavior and `Ctrl+A` on photo-grid pages.
+- Provide a right-click context menu whose rotate operations are selection-aware.
+- Provide three new selection-aware content operations:
+  - Move to Trash
+  - Move to Stash
+  - Empty Trash
 - Provide the current minimal sidebar shell in the lightbox.
-- Provide a month-level Day View calendar page that groups month photos by day.
 
-This backend is a photo browser and curator shell, not yet a full metadata editor.
+This backend is a **photo browser, curator shell, and triage tool**, not yet a full metadata editor.
 
 ---
 
@@ -44,15 +59,16 @@ Do **not** implement any of the following in this version:
 - AI descriptions or AI tags
 - Face recognition tables or UI
 - Geographic reverse lookup UI
-- Batch edit operations other than applying the existing rotate actions to the current selection
-- Delete endpoint
 - Add/remove tag endpoint
 - Change date endpoint
+- Crop endpoint
+- Restore-from-trash endpoint
+- Restore-from-stash endpoint
+- Empty stash endpoint
+- Multi-archive routing UI beyond stash/trash
 - Hero image selection by GPS, clustering, burst analysis, interest scoring, or ranking
-- A Google Calendar data integration of any kind
-- Week view, agenda view, or drag/drop calendar editing
 
-Even if older design notes mention those features, they are not part of the current backend.
+Even if older design notes mention those features, they are not part of this version.
 
 ---
 
@@ -64,16 +80,15 @@ Even if older design notes mention those features, they are not part of the curr
 - Flask
 - Pillow
 - sqlite3 from the Python standard library
+- Standard-library file operations: `os`, `shutil`, `pathlib`, `hashlib`, `json`, `logging`
 
 ### 3.2 Required global Pillow setting
 
-Set globally, before loading large images:
+Set globally before loading large images:
 
 ```python
 Image.MAX_IMAGE_PIXELS = None
 ```
-
-This is required to avoid warnings or failures on very large scans and panoramas.
 
 ### 3.3 Logging
 
@@ -101,6 +116,10 @@ ARCHIVE_ROOT/
         <sha1>.jpg
         _composites/
             <md5>.jpg
+    _trash/
+        ... preserved relative original hierarchy ...
+    _stash/
+        ... preserved relative original hierarchy ...
     _web_layout/
         assets/
             hero-timeline.png
@@ -118,8 +137,25 @@ The server must derive these paths from `ARCHIVE_ROOT`:
 - `THUMB_DIR = ARCHIVE_ROOT/_thumbs`
 - `COMPOSITE_DIR = ARCHIVE_ROOT/_thumbs/_composites`
 - `ASSETS_DIR = ARCHIVE_ROOT/_web_layout/assets`
+- `TRASH_DIR = ARCHIVE_ROOT/_trash`
+- `STASH_DIR = ARCHIVE_ROOT/_stash`
 
-Create `COMPOSITE_DIR` if it does not exist.
+Create these directories if they do not exist:
+
+- `COMPOSITE_DIR`
+- `TRASH_DIR`
+- `STASH_DIR`
+
+### 4.2 Reserved top-level folders
+
+The backend must treat these as reserved internal folders and exclude them from normal archive browsing unless explicitly required:
+
+- `_thumbs`
+- `_web_layout`
+- `_trash`
+- `_stash`
+
+Files moved to `_trash` or `_stash` are **not part of the active archive corpus**.
 
 ---
 
@@ -141,7 +177,7 @@ Required columns:
 - `custom_notes TEXT`
 - `custom_tags TEXT`
 
-### 5.2 Internal table: `composite_cache`
+### 5.2 Required table: `composite_cache`
 
 The backend must create this table if it does not already exist:
 
@@ -159,17 +195,24 @@ Also create an index for timeline reads:
 CREATE INDEX IF NOT EXISTS idx_media_dt ON media(final_dt)
 ```
 
-### 5.3 No schema migration beyond this
+### 5.3 No additional required schema changes for this feature
 
-Do not require any other tables.
+The new trash/stash behavior must work against the existing schema.
 
-If future tables exist, ignore them.
+Use these semantics:
+
+- Active files remain represented in `media` with `is_deleted = 0`.
+- Files moved to trash or stash must be removed from the active archive by updating `is_deleted = 1`.
+- `rel_fqn` must be updated to the new physical path under `_trash` or `_stash`.
+- No additional columns are required for this version.
+
+Note: this means both stash and trash are hidden from active browsing using the same database-level active/inactive mechanism. Their distinction is encoded in filesystem location, not a separate DB column.
 
 ---
 
 ## 6. Data loading and in-memory caches
 
-At startup, and also on every route render in the existing implementation, the backend loads the active photo set from SQLite into memory.
+At startup, and also on every route render in the current implementation, the backend loads the active photo set from SQLite into memory.
 
 Maintain these three global in-memory structures:
 
@@ -189,6 +232,8 @@ Equivalent SQL:
 ```sql
 SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC
 ```
+
+This query is the reason moved-to-trash and moved-to-stash files disappear from all active views.
 
 ### 6.2 Per-item derived fields
 
@@ -224,1169 +269,645 @@ Equivalent logic:
 
 #### `_folder_group` for undated items
 
-If `final_dt` starts with `0000`, classify as undated.
+For undated rows only, set `_folder_group` to the first path component of `_web_path`, unless missing.
 
-For undated items, derive `_folder_group` as:
+#### `_year`, `_month`, `_month_name`, `_decade`
 
-- split `_web_path` on `/`
-- use the immediate parent folder name, meaning `parts[-2]`
-- if no parent exists, use `"Root"`
+For rows whose `final_dt` is not zero-date:
 
-#### Date-derived fields for dated items
+- `_year` = first 4 chars of `final_dt`
+- `_month` = chars 6-7 of `final_dt`
+- `_month_name` = localized English month label (January, February, ...)
+- `_decade` = e.g. `1990s`, `2000s`
 
-If `final_dt` does **not** start with `0000`, parse it using:
+For rows whose `final_dt == "0000-00-00 00:00:00"`, do not set these fields.
 
-```python
-datetime.strptime(final_dt, "%Y-%m-%d %H:%M:%S")
-```
+### 6.3 Excluded path tags
 
-Then derive:
-
-- `_year`: first 4 chars of `final_dt`
-- `_month`: 2-digit month from parsed datetime, `01` through `12`
-- `_month_name`: full English month name, for example `January`
-- `_day`: 2-digit day from parsed datetime, `01` through `31`
-- `_day_int`: integer day for sorting and calendar placement
-- `_date_key`: `YYYY-MM-DD`
-- `_decade`: first 3 digits of year plus `0s`, for example `1990s`, `2000s`
-
-### 6.3 Excluded tags
-
-The backend must exclude the following tags case-insensitively:
+Exclude these tags before final `_tags_list` creation:
 
 - `pictures`
 - `photos`
-- `photographs`
 - `media`
 - `images`
 - `terrysbackup`
 - `topaz-undated`
 
-Also exclude any tag that is exactly a 4-digit year.
+Also exclude pure 4-digit year tags such as `1997`, `2004`, etc.
 
-Recommended helper semantics:
+### 6.4 Undated classification rule
+
+Rows belong in `UNDATED_CACHE` only when:
 
 ```python
-if tag.strip().lower() in TAG_EXCLUSIONS: exclude
-if re.fullmatch(r"\d{4}", tag.strip().lower()): exclude
+final_dt == "0000-00-00 00:00:00"
 ```
 
-### 6.4 Global tag index
-
-For every item, for every value in `_tags_list`, append the full item dict into `GLOBAL_TAGS[tag]`.
-
-The tag index preserves the current ordering inherited from `DB_CACHE` or `UNDATED_CACHE` population, which ultimately comes from `final_dt DESC` query order.
+Rows do **not** become undated merely because their path contains the string `undated`. That classification must already have been done by the ingestor.
 
 ---
 
-## 7. Helper behavior
+## 7. Composite card generation
 
-### 7.1 `get_top_tags(items, limit=3)`
+### 7.1 Purpose
 
-For any list of media items, count occurrences of tags found in each item's `_tags_list`, and return the `limit` most common tags.
+Composite cards are used for:
 
-This is used only to display the small tag pills under cards and day cells.
+- decade cards
+- year cards
+- month cards
+- explorer cards
+- tag cards
+- undated folder cards
+- calendar day cells when a representative thumbnail is needed
 
-### 7.2 `build_manifest(media_list)`
+### 7.2 Selection algorithm for composite source images
 
-Return a list of dictionaries in the same order as `media_list`.
+For the current working backend, composite image selection remains intentionally simple:
 
-Each manifest entry must contain:
+- Use the first 16 images from the media list as already ordered by the page/query.
+- Do **not** use GPS clustering, burst suppression, interest scoring, or ranking.
 
-- `sha1`
-- `path` = `_web_path`
-- `filename` = `original_filename`
-
-Example entry:
-
-```json
-{
-  "sha1": "abc123...",
-  "path": "Photos/2001/Trip/image001.jpg",
-  "filename": "image001.jpg"
-}
-```
-
-These manifests are serialized to JSON and consumed by the front-end lightbox JavaScript.
-
-### 7.3 `get_day_location_label(items)`
-
-This feature does **not** require a true geolocation database.
-
-Instead, for day view only, derive a simple display label from existing tags.
-
-Required behavior:
-
-1. Call `get_top_tags(items, limit=3)`
-2. Use the first returned tag, if any, as the day cell's location-style label
-3. If no tags exist, use an empty string
-
-This is a UI convenience only. It is not a real geographic lookup.
-
-### 7.4 `get_calendar_grid(year, month)`
-
-Use Python's standard library `calendar` module to build a month grid.
-
-Required semantics:
-
-- weeks must start on Sunday
-- return a matrix of weeks
-- each week contains 7 integers
-- `0` means an empty day cell outside the month
-
-Equivalent behavior:
+Equivalent logic:
 
 ```python
-calendar.Calendar(firstweekday=6).monthdayscalendar(year_int, month_int)
+media_list[:16]
 ```
+
+### 7.3 Composite layout
+
+- 4x4 tile grid
+- Render to a single JPEG cached in `COMPOSITE_DIR`
+- Cache key derived from the list of source SHA1 values and a composite version string
+
+### 7.4 Composite invalidation
+
+Any operation that materially changes visible image orientation or membership of a page must invalidate affected composite images.
+
+At minimum, invalidate after:
+
+- single rotate
+- batch rotate
+- move to trash
+- move to stash
+- empty trash
+
+It is acceptable to invalidate conservatively by clearing or version-bumping all composites rather than surgically removing only the touched ones.
 
 ---
 
-## 8. Composite card generation
+## 8. Top-level navigation
 
-### 8.1 Intent
-
-Each card in Timeline, Undated, Explorer, and Tags uses a 400x400 composite image made from up to 16 child images.
-
-### 8.2 Current baseline hero selection rule
-
-Use the **first 16 items** from the candidate `media_list`.
-
-There is no ranking, no geography, no burst suppression, and no scoring.
-
-```python
-heroes = media_list[:16]
-```
-
-### 8.3 Composite identity and caching
-
-The composite cache is keyed by an arbitrary logical `path_key`, such as:
-
-- `d_2000s`
-- `y_2004`
-- `m_2004_12`
-- `u_FolderName`
-- `f_SubFolder`
-- `t_Florida`
-
-For a given `path_key`:
-
-1. Check `composite_cache` for an existing `composite_hash`
-2. If the hash exists and `COMPOSITE_DIR/<composite_hash>.jpg` exists on disk, reuse it
-3. Otherwise build a new composite
-
-### 8.4 Composite hash
-
-Compute an MD5 hash from the concatenation of the selected 16 SHA1 values, in order.
-
-```python
-hashlib.md5("".join(sha1s).encode()).hexdigest()
-```
-
-Use that hash as the composite JPEG filename.
-
-### 8.5 Tile source preference
-
-For each hero image:
-
-1. Prefer `_thumbs/<sha1>.jpg` if it exists
-2. Otherwise fall back to the original archived file at `ARCHIVE_ROOT/<rel_fqn>`
-
-### 8.6 Tile processing
-
-Build a black or very dark 400x400 RGB canvas.
-
-For each selected image, in index order 0 through 15:
-
-- Open the tile image
-- Apply `ImageOps.exif_transpose(img)`
-- Resize in-place with `thumbnail((100, 100))`
-- Center the resized tile into its 100x100 cell
-- Paste into a 4x4 grid using row-major order
-
-Cell placement:
-
-- column = `i % 4`
-- row = `i // 4`
-- origin x = `column * 100`
-- origin y = `row * 100`
-
-Centering inside the cell:
-
-- `paste_x = cell_x + (100 - tile_width) // 2`
-- `paste_y = cell_y + (100 - tile_height) // 2`
-
-If any tile fails to open, skip it and continue.
-
-### 8.7 Composite write
-
-Save composite as JPEG to:
-
-```text
-COMPOSITE_DIR/<composite_hash>.jpg
-```
-
-Recommended quality: 85.
-
-### 8.8 Composite cache row write
-
-Persist the mapping:
-
-- `path_key`
-- comma-joined selected SHA1 list
-- `composite_hash`
-
-Note: the original working script uses `INSERT OR REPLACE` for this internal cache table. That is acceptable here because it does not affect user-authored metadata.
-
----
-
-## 9. Top-level UI structure
-
-### 9.1 Theme
-
-Use a dark UI.
-
-Required baseline palette:
-
-- page background: `#0d0d0d`
-- card background: `#1a1a1a`
-- accent: `#bb86fc`
-- secondary borders: dark gray around `#333`
-
-### 9.2 Typography
-
-Use Inter from Google Fonts.
-
-Navigation and headers should appear bold and modern.
-
-### 9.3 Navigation bar
-
-Sticky top navigation bar with links:
+The top nav remains:
 
 - Timeline
 - Undated
 - Explorer
 - Tags
 
-The active tab must be visually highlighted with the accent color and a bottom border.
-
-### 9.4 Hero banner
-
-Each major page shows a wide banner near the top using an image from `_web_layout/assets`.
-
-Use these filenames:
-
-- Timeline pages: `hero-timeline.png`
-- Undated pages: `hero-undated.png`
-- Explorer pages: `hero-files.png`
-- Tag pages: `hero-tags.png`
-
-### 9.5 Page body modes
-
-Pages render in one of three modes:
-
-- **Card grid mode** for decade/year/month groups, folder groups, and tags index
-- **Photo grid mode** for actual images within a single group
-- **Day calendar mode** for the by-day month view
+These top-level tabs remain stable and must not be renamed.
 
 ---
 
-## 10. Card model
+## 9. Timeline views
 
-Each card must include:
+### 9.1 Timeline root
 
-- `id` unique within page
-- `title`
-- `subtitle` like `"741 items"`
-- `url` destination when clicked
-- `heroes` source list for composite generation
-- `tags` top 0 to 3 tags
-- `comp_hash` resolved composite JPEG hash
+Route:
 
-### 10.1 Card visual behavior
+```text
+/timeline
+```
 
-- Card is clickable
-- Hover slightly raises card and highlights border with accent color
-- Top area is a square preview using the 4x4 composite
-- Bottom area shows title, subtitle, and tag pills
+Shows decade cards.
 
-### 10.2 Composite click behavior
+### 9.2 Decade view
 
-The square composite image itself must also support opening the lightbox directly to one of the underlying 16 images.
+Route:
 
-This is done by attaching a manifest id to the preview and then mapping click position to a tile index in JavaScript.
+```text
+/timeline/decade/<decade>
+```
 
-Specifically:
+Shows year cards for that decade.
 
-- The preview element receives `data-manifest="<card-id>"`
-- On click, compute relative x/y within the preview
-- Convert to 4x4 tile cell
-- Open the corresponding index in that card's manifest
+### 9.3 Year view
 
-If the clicked tile index exceeds the number of entries in the manifest, clamp or ignore safely.
+Route:
 
----
+```text
+/timeline/year/<year>
+```
 
-## 11. Photo grid model
+Shows month cards for that year.
 
-When rendering actual images within a group, use a responsive grid of thumbnail cards.
+### 9.4 Month grid view
 
-Each photo tile must:
-
-- show the 400px cached thumbnail from `/thumbs/<sha1>.jpg`
-- be clickable to open the lightbox at that image index
-- support right-click context menu for rotation
-- include a stable DOM id `thumb-<sha1>` so it can be refreshed after rotate
-- expose a visible checkbox affordance, styled similarly to Google Photos selection circles, for selecting this tile without opening the lightbox
-
-The photo grid uses the manifest id `main_gallery`.
-
-### 11.1 Scope of selection
-
-Selection exists only on **photo-grid pages**, meaning pages that render actual thumbnails rather than composite cards.
-
-This includes:
-
-- `/timeline/month/<year>/<month>`
-- `/timeline/month/<year>/<month>/day/<day>`
-- `/undated/<folder>`
-- `/folder` and `/folder/<path:sub>` for direct files shown in the current folder
-- `/tags/<tag>`
-
-Selection does **not** exist on card-grid pages such as decade, year, undated-group, explorer-folder-group, tags index, or the new month day-calendar page.
-
-### 11.2 Selection model
-
-The frontend maintains an in-memory selection set of SHA1 values for the **current page only**.
-
-Required behavior:
-
-- each photo tile has a checkbox hit target in the upper-left corner
-- clicking the checkbox toggles selection for that tile
-- clicking the thumbnail image itself still opens the lightbox and does **not** implicitly toggle selection
-- selected tiles must have a clear visual selected state, for example a highlighted border and checked checkbox
-- selection is page-local only, not global across routes
-
-A simple JavaScript `Set` keyed by SHA1 is sufficient. No backend persistence is needed.
-
-### 11.3 Selection lifecycle rules
-
-Selection must be cleared in all of the following cases:
-
-- when the user presses `Escape` while one or more tiles are selected
-- when the user navigates to a different route or page view
-- when the page is freshly loaded or reloaded
-
-Because selection is page-local and entirely client-side, changing pages automatically acts as deselect due to loss of context.
-
-### 11.4 Escape key priority
-
-The `Escape` key now has priority behavior:
-
-1. If the current page has one or more selected thumbnails, `Escape` clears the current selection and does nothing else.
-2. Otherwise, if the lightbox is open, `Escape` closes the lightbox.
-3. Otherwise, `Escape` has no effect.
-
-This rule is required so the user can reliably deselect without accidentally closing unrelated UI first.
-
-### 11.5 DOM requirements for selection
-
-Each photo tile must expose enough DOM state for client-side selection management.
-
-Minimum required semantics:
-
-- tile root element has a stable marker such as `data-sha1="<sha1>"`
-- tile root can receive a CSS class such as `selected`
-- checkbox element can be toggled independently of the image click handler
-
-The implementation may use either a real checkbox input or a styled clickable element that behaves like one, but it must present as a checkbox-style selection affordance to the user.
-
----
-
-## 12. Day calendar view model
-
-### 12.1 Intent
-
-The month page gains a secondary mode called **Day View**.
-
-This mode is calendar-like and visually similar in spirit to a month view in Google Calendar, but it is still a photo browser. It is not a scheduling system.
-
-### 12.2 Entry point
-
-The ordinary month thumbnail page at:
+Route:
 
 ```text
 /timeline/month/<year>/<month>
 ```
 
-must include a visible control labeled either:
+Shows the standard photo grid for the selected month.
+
+Must include an action control labeled:
 
 - `Day View`
-- or `By Day`
 
-Preferred label: `Day View`
-
-Clicking that control takes the user to:
+which links to:
 
 ```text
 /timeline/month/<year>/<month>/days
 ```
 
-### 12.3 Scope
+### 9.5 Month day-calendar view
 
-Day View exists only for dated month pages in Timeline.
+Route:
 
-No day-calendar mode is required for:
+```text
+/timeline/month/<year>/<month>/days
+```
 
-- undated
-- tags
-- explorer
-- year pages
-- decade pages
+Displays a Sunday-first month calendar.
 
-### 12.4 Source data
+Each populated day cell must show:
 
-Day View operates on the same filtered month set used by `/timeline/month/<year>/<month>`.
-
-Required filtering logic:
-
-- include only dated items where `_year == year and _month == month`
-- preserve the existing item order from `DB_CACHE` when building per-day manifests
-
-### 12.5 Grouping
-
-Group the filtered month items by `_date_key`.
-
-Each non-empty day bucket corresponds to one calendar day cell with photo content.
-
-### 12.6 Calendar grid
-
-Render the month as a 7-column calendar grid with day-of-week headers:
-
-- Sunday
-- Monday
-- Tuesday
-- Wednesday
-- Thursday
-- Friday
-- Saturday
-
-Use a normal month matrix with blank leading and trailing cells where needed.
-
-### 12.7 Day cell content
-
-For any calendar day that contains one or more photos, the cell must display all of the following:
-
+- a representative thumbnail
 - day number
-- one representative thumbnail image
-- photo count, for example `18 photos`
-- up to 3 top tags from that day's items
-- a simple location-style label derived from tags, if available
+- photo count
+- up to 3 top tags
+- a simple place-style label derived from top tags
 
-Representative thumbnail rule:
-
-- use the first photo in that day's bucket, preserving existing order
-- show `/thumbs/<sha1>.jpg`
-- if thumbnail is missing, fall back to opening the original image directly only if necessary; thumbnail-first is preferred
-
-Tag rule:
-
-- call `get_top_tags(day_items, limit=3)`
-- render up to 3 pills in the cell if space permits
-
-Location-style label rule:
-
-- call `get_day_location_label(day_items)`
-- if non-empty, show it as a short text line in the cell
-- if empty, omit the line
-
-### 12.8 Empty day cells
-
-Empty cells inside the current month must still show the day number, but no thumbnail and no metadata.
-
-Cells outside the month are blank placeholders.
-
-### 12.9 Click behavior
-
-Clicking any non-empty day cell must navigate to a dedicated day gallery route:
+Each populated cell links to:
 
 ```text
 /timeline/month/<year>/<month>/day/<day>
 ```
 
-where `<day>` is zero-padded, for example `01`, `09`, `17`, `31`.
+### 9.6 Day gallery view
 
-Clicking an empty day cell does nothing.
+Route:
 
-### 12.10 Day gallery route behavior
+```text
+/timeline/month/<year>/<month>/day/<day>
+```
 
-The dedicated day route renders a normal **photo-grid page**, not a calendar.
+Displays all photos for that day in the standard photo-grid/lightbox UI.
 
-Required behavior:
-
-- filter dated items where `_year == year and _month == month and _day == day`
-- render photo grid mode
-- preserve current filtered order from `DB_CACHE`
-- manifest id = `main_gallery`
-- page title = `<MonthName> <day>, <Year>`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / <day>` with links back
-
-This page is where the user can open the full-screen lightbox and cycle through that day's photos.
-
-### 12.11 Lightbox semantics for day route
-
-When the user opens the lightbox from the day gallery route, left/right navigation cycles only within that day's manifest.
-
-No cross-day navigation is required in the lightbox for this feature.
-
-### 12.12 Month page coexistence
-
-The ordinary month page remains the default page and keeps its existing photo-grid behavior.
-
-Day View is a secondary alternate view of the same month.
-
-The existing month page must **not** be replaced by the calendar.
-
-### 12.13 Day View control on day pages
-
-On the day-calendar route `/timeline/month/<year>/<month>/days`, include a visible control or link back to the ordinary month thumbnail page.
-
-Suggested labels:
-
-- `Grid View`
-- `Month Grid`
-- `Back to Month`
-
-Preferred label: `Grid View`
-
-On the ordinary month page, the `Day View` control should link to the calendar route.
+Lightbox navigation stays inside that day’s photo list only.
 
 ---
 
-## 13. Lightbox behavior
+## 10. Undated view
 
-### 13.1 Core behavior
-
-The backend uses one reusable full-screen lightbox overlay.
-
-It must support:
-
-- open from any gallery or card composite
-- close button
-- next and previous nav zones
-- arrow-key navigation
-- ESC to close
-- toggle sidebar with the `E` key
-
-### 13.2 Manifest model
-
-The frontend receives a JSON object named `manifests`.
-
-This is a dictionary:
-
-- key = manifest id, for example `main_gallery` or `d_2000s`
-- value = list of manifest entries from `build_manifest(...)`
-
-The lightbox keeps two pieces of state:
-
-- current manifest id
-- current image index
-
-### 13.3 Displayed image
-
-The lightbox `<img>` source is:
+Route:
 
 ```text
-/media/<manifest_entry.path>
+/undated
 ```
 
-Append a cache-busting query string timestamp after rotate operations.
+Displays cards grouped by `_folder_group` using only `UNDATED_CACHE`.
 
-### 13.4 Sidebar contents
-
-The sidebar is a minimal shell, not a real metadata panel.
-
-It must at least display:
-
-- file name of the current image
-- a notes text area
-
-The sidebar may slide in and out from the right.
-
-No persistence is required for the notes area in this version.
+If `UNDATED_CACHE` is empty, the page will appear empty except for the header. This is correct behavior.
 
 ---
 
-## 14. Context menu and rotate behavior
+## 11. Explorer view
 
-### 14.1 Right-click support
+### 11.1 Root explorer
 
-A custom context menu must appear on right-click for:
-
-- photo thumbnails in gallery mode
-- the currently open lightbox image
-
-The menu still only needs two actions:
-
-- Rotate Right (90)
-- Rotate Left (270)
-
-### 14.1.1 Selection-aware menu targeting
-
-The right-click menu must become selection-aware on photo-grid pages.
-
-Required behavior:
-
-- if **two or more** thumbnails are currently selected, right-clicking any thumbnail opens the existing custom menu and the selected operation applies to **all currently selected SHA1s**
-- if **zero or one** thumbnail is currently selected, right-clicking a thumbnail behaves exactly like the current baseline and targets only the thumbnail under the pointer
-- if the lightbox is open and the user right-clicks the lightbox image, the current single-image behavior is preserved; lightbox right-click does not need batch behavior in this feature
-
-This rule preserves baseline behavior for ordinary use while enabling batch rotate only when there is a meaningful current selection.
-
-### 14.2 Rotate endpoint
-
-Preserve the existing endpoint:
+Route:
 
 ```text
-POST /api/rotate/<sha1>
+/folder
 ```
 
-Request body JSON must include:
+Shows cards for first-level folders.
+
+### 11.2 Nested explorer
+
+Route:
+
+```text
+/folder/<path:subpath>
+```
+
+Shows child folder cards and/or direct photo grid depending on contents.
+
+Explorer grouping is based on `_web_path`, not timestamps.
+
+---
+
+## 12. Tags view
+
+### 12.1 Tag root
+
+Route:
+
+```text
+/tags
+```
+
+Displays tag cards using the current existing mode.
+
+### 12.2 Tag detail
+
+Route:
+
+```text
+/tags/<tag>
+```
+
+Displays the standard photo grid for that tag.
+
+### 12.3 Tag-mode note
+
+A future compact tag-pill mode has been discussed but is not part of this version.
+
+---
+
+## 13. Photo-grid behavior
+
+The standard photo-grid UI is used on:
+
+- month grid pages
+- day gallery pages
+- explorer leaf pages
+- tag detail pages
+- any other direct-photo pages in the current backend
+
+### 13.1 Standard interactions
+
+Each photo card supports:
+
+- checkbox selection overlay
+- click to open lightbox
+- right-click custom context menu
+
+### 13.2 Selection state
+
+Selection is page-local and client-side only.
+
+Selection must be cleared when:
+
+- the user presses `Escape`
+- the user navigates to another page/view
+- a completed batch operation chooses to clear selection after refresh
+
+### 13.3 Select All
+
+Add a visible `Select All` action on photo-grid pages.
+
+Behavior:
+
+- selects all currently visible photo cards on the page
+- does not select hidden/off-page items
+- updates checkbox states and selection count immediately
+
+### 13.4 `Ctrl+A`
+
+On photo-grid pages, pressing `Ctrl+A` must perform the same action as `Select All`.
+
+Rules:
+
+- it applies only to the current visible photo-grid page
+- if keyboard focus is in a text input or textarea, do not override the browser’s normal select-all behavior inside that field
+- it must not cross page boundaries or persist after navigation
+
+### 13.5 Escape
+
+`Escape` must clear current selection first.
+
+If the lightbox is open, the existing lightbox-close behavior may remain, but selection clearing must still be honored in a sensible order.
+
+---
+
+## 14. Lightbox behavior
+
+The lightbox remains full-screen and supports:
+
+- previous / next navigation
+- keyboard arrow navigation
+- current minimal sidebar shell
+- right-click context menu
+
+No new metadata editor is added in this version.
+
+---
+
+## 15. Context menu behavior
+
+### 15.1 Current items
+
+The existing context menu already supports:
+
+- Rotate Right
+- Rotate Left
+
+### 15.2 New items
+
+Add these menu items:
+
+- Move to Trash
+- Move to Stash
+
+Additionally, provide an `Empty Trash` control in the UI, but **not** as a per-image context menu item. It is a higher-level archive action.
+
+### 15.3 Selection-aware semantics
+
+If multiple items are selected and the right-click target is one of the selected items, the menu operations apply to the full current selection.
+
+If no meaningful multi-selection exists, right-click behaves as it does currently for a single image.
+
+---
+
+## 16. Rotate operations
+
+### 16.1 Single rotate
+
+Existing behavior remains:
+
+- rotate master image on disk
+- regenerate thumbnail
+- invalidate composites
+- refresh UI
+
+### 16.2 Batch rotate
+
+Existing selection-aware batch rotate remains.
+
+Endpoint semantics may remain:
+
+```text
+POST /api/rotate_batch
+```
+
+with a JSON payload like:
 
 ```json
 {
+  "sha1_list": ["...", "..."],
   "degrees": 90
 }
 ```
 
-or
+The backend may choose to reload the page after completion. That is acceptable and currently preferred for safety.
+
+---
+
+## 17. Trash and stash behavior
+
+### 17.1 Purpose
+
+Trash and stash are reversible file-triage operations.
+
+- **Trash** means the file is no longer wanted in the active archive, but can still be recovered until trash is emptied.
+- **Stash** means the file is valuable but does not belong in the current archive context.
+
+### 17.2 Physical move rules
+
+Given an active file such as:
+
+```text
+pictures/vacation/beach.jpg
+```
+
+Move to Trash must physically move it to:
+
+```text
+_trash/pictures/vacation/beach.jpg
+```
+
+Move to Stash must physically move it to:
+
+```text
+_stash/pictures/vacation/beach.jpg
+```
+
+Preserve the relative path beneath the archive root.
+
+Create intermediate directories as needed.
+
+### 17.3 Name collision handling
+
+If a destination file already exists in trash or stash at the target relative path, the backend must avoid destructive overwrite.
+
+Acceptable behavior:
+
+- append a suffix such as `_1`, `_2`, etc., before the extension
+- then update `rel_fqn` to the actual destination path used
+
+### 17.4 Database updates
+
+After a successful move to trash or stash:
+
+- update `rel_fqn` to the new relative path under `_trash` or `_stash`
+- set `is_deleted = 1`
+- commit immediately
+- invalidate affected composites
+- refresh active in-memory caches or reload page data so the files disappear from active views
+
+### 17.5 Visibility rules
+
+Files in `_trash` or `_stash` must not appear in:
+
+- Timeline
+- Day View
+- Undated
+- Explorer
+- Tags
+- lightbox sequences drawn from active pages
+
+### 17.6 Scope of move operations
+
+Move to Trash and Move to Stash must operate on:
+
+- the current single image if no meaningful multi-selection exists
+- the full current selected set if multi-selection applies
+
+### 17.7 Recommended endpoints
+
+One acceptable design is:
+
+```text
+POST /api/move_to_trash
+POST /api/move_to_stash
+```
+
+with payloads like:
 
 ```json
 {
-  "degrees": 270
+  "sha1_list": ["...", "..."]
 }
 ```
 
-For this feature, the request body may also include an optional batch list:
+The backend may return JSON and then reload the page client-side.
 
-```json
-{
-  "degrees": 90,
-  "sha1_list": ["abc", "def", "ghi"]
-}
+---
+
+## 18. Empty Trash behavior
+
+### 18.1 Purpose
+
+`Empty Trash` is the only destructive bulk operation in this version.
+
+There is **no** `Empty Stash` operation.
+
+### 18.2 Behavior
+
+When triggered, the backend must:
+
+- recursively delete all files under `_trash`
+- remove corresponding DB rows from `media`, or otherwise make them permanently non-recoverable
+- invalidate affected composites
+- refresh active caches
+
+Preferred DB behavior for this version:
+
+- delete the matching `media` rows whose `rel_fqn` begins with `_trash\\` or `_trash/`
+
+This keeps the archive DB clean.
+
+### 18.3 Confirmation requirement
+
+This action must require an explicit confirmation step in the UI. A simple confirmation dialog is acceptable.
+
+### 18.4 Recommended endpoint
+
+One acceptable design is:
+
+```text
+POST /api/empty_trash
 ```
 
-Selection-aware endpoint semantics:
-
-- if `sha1_list` is present and contains 2 or more values, rotate all listed SHA1 values
-- otherwise rotate only the route SHA1
-- the route SHA1 remains required for backward compatibility with the baseline frontend
-
-### 14.3 Rotate lookup
-
-For each target SHA1, find `rel_fqn` from the `media` table.
-
-If any SHA1 is not found, the simplest acceptable behavior is either:
-
-- fail the whole request with HTTP 404, or
-- skip invalid SHA1s and return only the successfully rotated list
-
-Preferred behavior for this feature: fail only if the primary route SHA1 is missing, but otherwise process valid entries from `sha1_list` and ignore duplicates.
-
-Before processing, normalize the target list by:
-
-- removing duplicates while preserving order
-- falling back to `[route_sha1]` if no usable batch list was supplied
-
-### 14.4 Rotation semantics
-
-For each target SHA1:
-
-- open the original media file from disk
-- preserve existing EXIF bytes if present
-- map requested degrees to Pillow transpose methods like this:
-  - `90` means visual rotate-right, implemented with `Image.ROTATE_270`
-  - `270` means visual rotate-left, implemented with `Image.ROTATE_90`
-- save back to the same file path as JPEG, preserving EXIF bytes when possible
-
-Recommended quality: 95.
-
-### 14.5 Thumbnail regeneration after rotate
-
-After rotating each original file, regenerate `_thumbs/<sha1>.jpg` from the updated original.
-
-Use the current thumbnail logic:
-
-- open rotated original
-- optionally apply `ImageOps.exif_transpose`
-- resize to fit within 400x400 using `thumbnail((400,400))`
-- save as RGB JPEG
-
-### 14.6 Front-end refresh behavior after rotate
-
-After successful rotate on a photo-grid page:
-
-- refresh every affected thumbnail DOM node `thumb-<sha1>` with a cache-busting timestamp
-- if the lightbox is open on one of the rotated images, reload the current full-size image with cache-busting timestamp
-- leave selection intact after the rotate operation; rotate is not itself a deselect action
-
-The backend still does **not** need to proactively invalidate every affected composite card.
-That omission remains acceptable for this version.
-
-Return JSON in a form that supports both single and batch refresh. A minimal acceptable response is:
-
-```json
-{
-  "status": "ok",
-  "updated": ["abc", "def", "ghi"]
-}
-```
-
-For backward compatibility, if only one image was rotated, `updated` may contain a single SHA1.
+No payload is required.
 
 ---
 
-## 15. Regression constraints for the day-view feature delta
+## 19. Selection bar / page actions
 
-The day-view feature must **not** change any of the following baseline behaviors:
+A selection bar is already present in the current backend for batch rotate.
 
-- Timeline decade, year, and month grouping rules
-- Existing month page route and photo-grid behavior
-- Undated grouping and route structure
-- Explorer grouping and route structure
-- Tags grouping and route structure
-- Composite card generation and click-to-lightbox behavior
-- Lightbox navigation within a manifest
-- Existing single-image and multi-select rotate behavior on photo-grid pages
-- Existing banner images, dark theme, and page layout structure
-- Existing database schema assumptions
+Extend it as needed to support:
 
-Day View is additive. It is not a replacement for the month gallery page.
+- selected count display
+- Select All
+- Rotate Left
+- Rotate Right
+- Move to Trash
+- Move to Stash
+
+It is acceptable for `Empty Trash` to live outside the selection bar as a page-level action.
 
 ---
 
-## 16. Routes and page behavior
+## 20. UI refresh behavior after mutation
 
-### 16.1 `/` and `/timeline`
+After any successful mutating operation:
 
-These are the same page.
+- single rotate
+- batch rotate
+- move to trash
+- move to stash
+- empty trash
 
-Behavior:
+it is acceptable and preferred to do a full page reload rather than attempting a brittle partial DOM patch.
 
-- load cache
-- group all dated items by `_decade`
-- sort decades descending, newest first
-- create one card per decade
-- card title = decade string like `2000s`
-- card subtitle = `<count> items`
-- card URL = `/timeline/decade/<decade>`
-- card tags = `get_top_tags(items)`
-- banner = `hero-timeline.png`
-- active nav tab = `timeline`
-- breadcrumb text = `Decades`
-
-### 16.2 `/timeline/decade/<decade>`
-
-Behavior:
-
-- load cache
-- filter dated items where `_decade == decade`
-- group by `_year`
-- sort years descending
-- create one card per year
-- card URL = `/timeline/year/<year>`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade>` where `Timeline` links to `/timeline`
-
-### 16.3 `/timeline/year/<year>`
-
-Behavior:
-
-- load cache
-- filter dated items where `_year == year`
-- group by `_month`
-- sort month codes ascending (`01` to `12`)
-- derive display month name from the first item in each month bucket
-- create one card per month
-- card title = full month name
-- card URL = `/timeline/month/<year>/<month>`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade> / <year>` with links back
-
-### 16.4 `/timeline/month/<year>/<month>`
-
-Behavior:
-
-- load cache
-- filter dated items where `_year == year and _month == month`
-- render photo grid mode, not card mode
-- preserve current order from `DB_CACHE`
-- manifest id = `main_gallery`
-- page title = `<MonthName> <Year>`
-- include a visible `Day View` control linking to `/timeline/month/<year>/<month>/days`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade> / <year> / <MonthName>` with links back
-
-### 16.5 `/timeline/month/<year>/<month>/days`
-
-Behavior:
-
-- load cache
-- filter dated items where `_year == year and _month == month`
-- group filtered items by `_date_key`
-- build a Sunday-first calendar matrix for the target month
-- render day calendar mode, not photo grid mode
-- page title = `<MonthName> <Year> · Day View`
-- include a visible `Grid View` control linking back to `/timeline/month/<year>/<month>`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / Day View` with links back
-
-### 16.6 `/timeline/month/<year>/<month>/day/<day>`
-
-Behavior:
-
-- load cache
-- filter dated items where `_year == year and _month == month and _day == day`
-- render photo grid mode
-- preserve current filtered order from `DB_CACHE`
-- manifest id = `main_gallery`
-- page title = `<MonthName> <day>, <Year>`
-- include a visible `Day View` control linking back to `/timeline/month/<year>/<month>/days`
-- banner = `hero-timeline.png`
-- active tab = `timeline`
-- breadcrumb = `Timeline / <decade> / <year> / <MonthName> / <day>` with links back
-
-### 16.7 `/undated`
-
-Behavior:
-
-- load cache
-- group `UNDATED_CACHE` by `_folder_group`
-- sort groups alphabetically by folder name
-- create one card per group
-- card URL = `/undated/<folder_group>`
-- banner = `hero-undated.png`
-- active tab = `undated`
-- breadcrumb = `Undated`
-
-### 16.8 `/undated/<folder>`
-
-Behavior:
-
-- load cache
-- filter undated items where `_folder_group == folder`
-- render photo grid mode
-- manifest id = `main_gallery`
-- banner = `hero-undated.png`
-- active tab = `undated`
-- breadcrumb = `Undated / <folder>` where `Undated` links to `/undated`
-
-### 16.9 `/folder` and `/folder/<path:sub>`
-
-This is the Explorer view.
-
-Behavior:
-
-- load cache
-- combine all visible media: `DB_CACHE + UNDATED_CACHE`
-- determine `prefix = sub + "/"` if `sub` is non-empty, else empty string
-- scan all items whose `_web_path` starts with `prefix`
-- for each matching path:
-  - if remaining suffix contains `/`, treat the first path segment as a direct subfolder
-  - otherwise treat the media item as a direct file in this folder
-
-The page must therefore show:
-
-- one card per direct child subfolder
-- one photo tile per direct media file in the current folder
-
-Subfolder cards:
-
-- title = folder name only
-- subtitle = total count of all items under that subtree
-- URL = `/folder/<prefix + folder_name>`
-
-Page presentation:
-
-- if `sub` empty, breadcrumb = `Root`
-- otherwise breadcrumb = `Root / ...` with slash-separated folder path
-- banner = `hero-files.png`
-- active tab = `file`
-
-Note: even though the nav text says `EXPLORER`, the active-tab identifier in the working script is `file`. Preserve behavior or implement equivalent highlighting logic.
-
-### 16.10 `/tags`
-
-Behavior:
-
-- load cache
-- sort all tag names alphabetically
-- create one card per tag
-- card title = `#<tag>`
-- card subtitle = `<count> items`
-- card URL = `/tags/<tag>`
-- card tags list should be empty on tag cards
-- banner = `hero-tags.png`
-- active tab = `tags`
-- breadcrumb = `All Tags`
-
-### 16.11 `/tags/<tag>`
-
-Behavior:
-
-- load cache
-- lookup `GLOBAL_TAGS.get(tag, [])`
-- render photo grid mode using those items in current stored order
-- manifest id = `main_gallery`
-- banner = `hero-tags.png`
-- active tab = `tags`
-- breadcrumb = `Tags / <tag>` where `Tags` links to `/tags`
-
-### 16.12 `/media/<path:p>`
-
-Serve the original file from disk.
-
-Behavior:
-
-- URL-decode `p`
-- replace web slashes with OS path separators
-- join with `ARCHIVE_ROOT`
-- normalize path
-- if file exists, return `send_file(...)`
-- else return 404 text `Not Found`
-
-### 16.13 `/thumbs/<f>`
-
-Serve a thumbnail file directly from `THUMB_DIR`.
-
-### 16.14 `/composite/<h>.jpg`
-
-Serve a composite JPEG directly from `COMPOSITE_DIR`.
-
-### 16.15 `/assets/<path:f>`
-
-Serve banner images and other static UI assets from `ASSETS_DIR`.
+This is consistent with the current backend’s preference for correctness over fancy incremental updates.
 
 ---
 
-## 17. HTML template requirements
+## 21. Regression constraints
 
-A single `render_template_string(...)` template is sufficient for this version.
+These are strict non-regression requirements.
 
-The template must be capable of rendering all three modes:
+The following must remain unchanged unless explicitly required by this spec:
 
-- card-grid pages
-- photo-grid pages
-- day-calendar pages
+- top nav labels and routes
+- timeline grouping behavior
+- year and decade card behavior
+- month grid behavior
+- day-calendar behavior
+- day gallery behavior
+- Undated grouping behavior
+- Explorer grouping behavior
+- tag derivation and sort behavior
+- lightbox arrow navigation
+- single-image rotate behavior
+- current minimal sidebar shell
+- database dependence on existing `media` schema
 
-It must accept these conceptual inputs:
-
-- `theme_color`
-- `page_title`
-- `active_tab`
-- `banner_img`
-- `breadcrumb`
-- `cards` optional
-- `photos` optional
-- `day_calendar` optional
-- `manifests`
-
-### 17.1 Card-grid rendering
-
-When `cards` exists:
-
-- render responsive card grid
-- each card preview uses `/composite/<comp_hash>.jpg`
-- card body shows title, subtitle, tag pills
-- tag pills link to `/tags/<tag>`
-
-### 17.2 Photo-grid rendering
-
-When `photos` exists:
-
-- render responsive photo grid
-- each tile uses `/thumbs/<sha1>.jpg`
-- each tile must attach its manifest index and SHA1 for lightbox and rotate
-
-### 17.3 Day-calendar rendering
-
-When `day_calendar` exists:
-
-- render a month-style calendar grid with 7 columns
-- render day-of-week headings across the top
-- render one box per day cell
-- day cells containing media should be visually distinct from empty cells
-- each non-empty day cell should show one thumbnail, count text, optional location-style label, and up to 3 tag pills
-- the whole non-empty day cell should be clickable and navigate to the day route
-
-The visual style should feel calendar-like, not like a standard card grid.
+The new feature work must minimize diff size and avoid unrelated rewrites.
 
 ---
 
-## 18. Front-end JavaScript requirements
+## 22. Acceptance tests
 
-Implement JavaScript sufficient to reproduce current interaction behavior.
+### 22.1 Existing views still work
 
-### 18.1 Required functions
+1. Open `/timeline`; decade cards render.
+2. Open a decade page; year cards render.
+3. Open a year page; month cards render.
+4. Open a month page; photo grid renders and `Day View` button is present.
+5. Open `/timeline/month/<year>/<month>/days`; calendar renders.
+6. Click a populated day; day gallery renders and lightbox works.
+7. Open `/undated`; undated cards render if zero-date rows exist.
+8. Open `/folder`; explorer cards render.
+9. Open `/tags`; tag cards render.
+10. Open a tag detail page; photo grid renders.
 
-Equivalent logic is required for:
+### 22.2 Selection behavior
 
-- `openLB(manifestId, index)`
-- `closeLB()`
-- `changeImg(delta)`
-- `updateLB()`
-- `toggleSidebar()`
-- `handleCompositeClick(event, manifestId)`
-- `handleContextMenu(event, sha1)`
-- `rotateImage(degrees)`
+1. On a photo-grid page, click one checkbox; selection count becomes 1.
+2. Click additional checkboxes; count updates.
+3. Press `Escape`; selection clears.
+4. Navigate away; selection is gone on the next page.
+5. Press `Ctrl+A`; all visible photo cards become selected.
+6. Click `Select All`; all visible photo cards become selected.
 
-### 18.2 Keyboard behavior
+### 22.3 Rotate behavior
 
-Global key handling:
+1. Select multiple photos.
+2. Use right-click Rotate Right on one selected photo.
+3. All selected photos rotate.
+4. Thumbnails and composites refresh correctly after reload.
 
-- `Escape` clears current selection if any selection exists on the current photo-grid page
-- otherwise `Escape` closes the lightbox
-- `ArrowRight` advances if lightbox active
-- `ArrowLeft` goes back if lightbox active
-- `e` toggles sidebar if lightbox active or globally, matching existing loose behavior
+### 22.4 Move to Trash
 
-### 18.3 Context menu dismissal
+1. Select one or more photos on a photo-grid page.
+2. Invoke `Move to Trash`.
+3. Physical files appear under `_trash/...` with preserved relative paths.
+4. Corresponding DB rows are updated: `rel_fqn` under `_trash`, `is_deleted = 1`.
+5. Photos disappear from active view after reload.
 
-Clicking elsewhere hides the custom context menu.
+### 22.5 Move to Stash
 
-### 18.4 Day calendar JS
+1. Select one or more photos on a photo-grid page.
+2. Invoke `Move to Stash`.
+3. Physical files appear under `_stash/...` with preserved relative paths.
+4. Corresponding DB rows are updated: `rel_fqn` under `_stash`, `is_deleted = 1`.
+5. Photos disappear from active view after reload.
 
-No heavy JavaScript behavior is required for day calendar mode.
+### 22.6 Empty Trash
 
-Simple anchor navigation is sufficient.
-
-No drag/drop, no inline expansion, and no popover is required.
-
----
-
-## 19. Sorting and ordering rules
-
-These rules matter and must be reproduced.
-
-- Base media order comes from SQL `ORDER BY final_dt DESC`
-- Timeline decades sorted descending
-- Timeline years sorted descending
-- Timeline months sorted ascending by month code
-- Day calendar rows follow a normal Sunday-first month matrix
-- Per-day gallery items preserve their filtered order from the base query
-- Undated folder groups sorted alphabetically
-- Explorer subfolders sorted alphabetically
-- Tags index sorted alphabetically by tag name
-- Items inside any photo grid preserve their existing filtered order, which comes from the original query order unless regrouped differently
-
----
-
-## 20. Error handling and tolerance
-
-The server should be forgiving.
-
-- Missing assets should not crash the server
-- Missing thumbnails should fall back where possible in composite generation
-- Individual corrupt images in composites should be skipped, not fatal
-- Missing media path on `/media/...` should return 404, not crash
-- Missing SHA1 on rotate should return JSON error 404
-- A month day-view route with zero photos is still allowed and should render an empty calendar for that month
-- A day route with zero photos may render an empty photo grid or a friendly empty-state message
+1. After moving files to trash, trigger `Empty Trash`.
+2. Confirm the destructive action.
+3. `_trash` contents are deleted.
+4. Matching DB rows are removed.
+5. Trash does not reappear after backend restart.
 
 ---
 
-## 21. Acceptance criteria
+## 23. Implementation guidance
 
-A backend implementation is considered correct if all of the following are true.
+When a coding LLM uses this spec, it should:
 
-### 21.1 Timeline
+- start from the latest working backend behavior, not from scratch
+- preserve existing routes and templates wherever possible
+- add the smallest number of new endpoints necessary
+- prefer explicit helper functions for move and delete operations
+- avoid broad refactors unrelated to this feature
 
-- `/timeline` shows one composite card per decade
-- clicking a decade card opens the year list
-- clicking a year card opens the month list
-- clicking a month card opens a gallery of thumbnails
-- clicking a composite tile opens the corresponding image in the lightbox
-
-### 21.2 Undated
-
-- `/undated` groups undated images by immediate parent folder
-- clicking a group opens a gallery of those images
-
-### 21.3 Explorer
-
-- `/folder` shows direct child subfolders as cards and direct files as thumbnails
-- drilling into subfolders works recursively
-
-### 21.4 Tags
-
-- `/tags` shows one card per available tag
-- `/tags/<tag>` shows only images with that tag
-
-### 21.5 Lightbox
-
-- opens from any gallery
-- arrow keys navigate
-- ESC closes
-- `E` toggles sidebar
-
-### 21.6 Rotate
-
-- right-click thumbnail or lightbox image shows rotate menu
-- rotation updates original file on disk
-- thumbnail refreshes immediately
-
-### 21.7 Day View
-
-- `/timeline/month/<year>/<month>` shows a visible `Day View` control
-- `/timeline/month/<year>/<month>/days` renders a month-style calendar
-- each day with photos shows one thumbnail and a photo count
-- non-empty day cells display up to 3 tags
-- non-empty day cells display a short location-style label when available from tags
-- clicking a non-empty day cell opens `/timeline/month/<year>/<month>/day/<day>`
-- the day route renders a normal photo grid for only that day's items
-- opening the lightbox from the day route lets the user cycle through only that day's photos
-
-### 21.8 Visual style
-
-- dark theme
-- sticky nav
-- square composite cards where applicable
-- banner image per major page
-- cards, grids, and day calendar broadly match the existing UI direction
-
----
-
-## 22. Acceptance tests for the day-view feature delta
-
-1. Open `/timeline/month/2026/03`; verify that a visible `Day View` link or button appears.
-2. Click `Day View`; verify navigation to `/timeline/month/2026/03/days`.
-3. Verify that the page shows a Sunday-first calendar month layout for March 2026.
-4. Verify that empty days show only the day number.
-5. Verify that a day with photos shows one thumbnail, a count such as `12 photos`, and up to 3 tag pills.
-6. Verify that if the day has tags, the first top tag appears as a short location-style label.
-7. Click a non-empty day cell; verify navigation to `/timeline/month/2026/03/day/18` or equivalent zero-padded day route.
-8. Verify that the day route shows only photos from that date.
-9. Open the lightbox from the day route and use left/right arrows; verify that navigation stays within that day's manifest only.
-10. Click `Grid View` from the day-calendar page; verify return to the ordinary month gallery.
-11. Verify that Undated, Explorer, and Tags pages are unchanged.
-12. Verify that the existing rotate and multi-select behavior on ordinary photo-grid pages still works.
-
----
-
-## 23. Implementation notes for future specs
-
-When extending this system later, the next spec should be written as a delta against this version, not as a replacement.
-
-Any future feature spec should explicitly state one of:
-
-- `NEW`: feature does not exist in current version
-- `CHANGE`: replace a current behavior
-- `KEEP`: current behavior remains unchanged
-
-That prevents the next coding LLM from accidentally rebuilding the app around aspirational notes instead of the working current system.
+This feature is intentionally bounded. Implement only what is described here.

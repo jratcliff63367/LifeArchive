@@ -8,9 +8,9 @@ from datetime import datetime
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 # --- CONFIGURATION ---
-SOURCES = [r"e:\LegacyTransfer\TransferTest"]
-DEST_ROOT = r"C:\LifeArchive"
--
+SOURCES = [r"e:\topaz-undated"]
+DEST_ROOT = r"C:\website-test"
+
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
 
