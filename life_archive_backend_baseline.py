@@ -14,7 +14,9 @@ Baseline behavior reproduced here:
 - Thumbnail serving and full-media serving
 - Lightbox with keyboard navigation
 - Context menu with 90 degree rotation operations
-- Photo-grid multi-select with checkbox overlays and batch rotate
+- Photo-grid multi-select with checkbox overlays, select all, batch rotate
+- Move to Trash / Move to Stash
+- Empty Trash
 - Current curation sidebar shell (filename + notes textarea only)
 
 Not included yet:
@@ -22,7 +24,6 @@ Not included yet:
 - Videos
 - Tag editing
 - Date editing
-- Delete operations
 - AI/geography/face metadata panels
 - Day calendar view
 """
@@ -35,6 +36,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -369,6 +371,8 @@ HTML_TEMPLATE = r"""
             font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+            cursor: pointer;
+            font-family: inherit;
         }
         .page-action.active, .page-action:hover {
             border-color: var(--accent);
@@ -467,6 +471,8 @@ HTML_TEMPLATE = r"""
     <div id="context-menu">
         <div class="menu-item" onclick="rotateImage(90)">Rotate 90° Clockwise ↻</div>
         <div class="menu-item" onclick="rotateImage(270)">Rotate 90° Counter ↺</div>
+        <div class="menu-item" onclick="moveContextTo('trash')">Move to Trash</div>
+        <div class="menu-item" onclick="moveContextTo('stash')">Move to Stash</div>
     </div>
 
     <div class="nav-bar">
@@ -487,8 +493,19 @@ HTML_TEMPLATE = r"""
         {% if action_links %}
         <div class="page-actions">
             {% for action in action_links %}
-            <a href="{{ action.url }}" class="page-action {{ 'active' if action.active else '' }}">{{ action.label }}</a>
+                {% if action.onclick %}
+                <button type="button" class="page-action {{ 'active' if action.active else '' }}" onclick="{{ action.onclick }}">{{ action.label }}</button>
+                {% else %}
+                <a href="{{ action.url }}" class="page-action {{ 'active' if action.active else '' }}">{{ action.label }}</a>
+                {% endif %}
             {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if photos %}
+        <div class="page-actions">
+            <button type="button" class="page-action" onclick="selectAllVisible()">Select All</button>
+            <button type="button" class="page-action" onclick="emptyTrash()">Empty Trash</button>
         </div>
         {% endif %}
 
@@ -573,8 +590,11 @@ HTML_TEMPLATE = r"""
 
     <div id="selection-bar" class="selection-bar">
         <span id="selection-count">0 selected</span>
+        <button type="button" onclick="selectAllVisible()">Select All</button>
         <button type="button" onclick="rotateSelection(90)">Rotate 90° Clockwise ↻</button>
         <button type="button" onclick="rotateSelection(270)">Rotate 90° Counter ↺</button>
+        <button type="button" onclick="moveCurrentSelectionTo('trash')">Move to Trash</button>
+        <button type="button" onclick="moveCurrentSelectionTo('stash')">Move to Stash</button>
     </div>
 
     <div id="lightbox" onclick="if(event.target===this) closeLB()">
@@ -673,6 +693,13 @@ HTML_TEMPLATE = r"""
             refreshSelectionUI();
         }
 
+        function selectAllVisible() {
+            document.querySelectorAll('.photo-card[data-sha]').forEach(card => {
+                selectedSha1s.add(card.dataset.sha);
+            });
+            refreshSelectionUI();
+        }
+
         function getContextTargets(clickedSha1) {
             if (selectedSha1s.size > 1 && selectedSha1s.has(clickedSha1)) {
                 return Array.from(selectedSha1s);
@@ -744,11 +771,65 @@ HTML_TEMPLATE = r"""
             });
         }
 
+        function moveSha1List(target, sha1List) {
+            if (!sha1List || sha1List.length === 0) return;
+            const endpoint = target === 'trash' ? '/api/move_to_trash' : '/api/move_to_stash';
+            const label = target === 'trash' ? 'trash' : 'stash';
+            if (!confirm(`Move ${sha1List.length} image(s) to ${label}?`)) return;
+
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sha1_list: sha1List })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    location.reload();
+                } else {
+                    alert(data.message || `Failed to move image(s) to ${label}.`);
+                }
+            });
+        }
+
+        function moveCurrentSelectionTo(target) {
+            moveSha1List(target, Array.from(selectedSha1s));
+        }
+
+        function moveContextTo(target) {
+            const sha1List = getContextTargets(menuSha1);
+            moveSha1List(target, sha1List);
+        }
+
+        function emptyTrash() {
+            if (!confirm('Permanently delete all files currently in _trash? This cannot be undone.')) return;
+            fetch('/api/empty_trash', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    location.reload();
+                } else {
+                    alert(data.message || 'Failed to empty trash.');
+                }
+            });
+        }
+
         window.onclick = (e) => {
             document.getElementById('context-menu').style.display = 'none';
         };
 
         document.onkeydown = (e) => {
+            const targetTag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
+            const isTextInput = targetTag === 'input' || targetTag === 'textarea';
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
+                e.preventDefault();
+                selectAllVisible();
+                return;
+            }
             if (e.key === 'Escape') {
                 if (selectedSha1s.size > 0) {
                     clearSelection();
@@ -1019,6 +1100,88 @@ def create_app(config: ArchiveConfig) -> Flask:
                 conn.execute("DELETE FROM composite_cache")
                 conn.commit()
 
+    def safe_destination_relative(base_dir_name: str, rel_fqn: str, sha1: str) -> Path:
+        rel_path = Path(str(rel_fqn).replace("\\", "/"))
+        target_rel = Path(base_dir_name) / rel_path
+        candidate = config.archive_root / target_rel
+        if not candidate.exists():
+            return target_rel
+
+        stem = candidate.stem
+        suffix = candidate.suffix
+        parent = Path(base_dir_name) / rel_path.parent
+        return parent / f"{stem}__{sha1[:8]}{suffix}"
+
+    def move_media_records(sha1_list: list[str], target_dir_name: str) -> tuple[bool, str | None]:
+        if not sha1_list:
+            return False, "sha1_list required"
+
+        target_dir = config.archive_root / target_dir_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(config.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"SELECT sha1, rel_fqn FROM media WHERE sha1 IN ({','.join('?' for _ in sha1_list)})",
+                tuple(sha1_list),
+            ).fetchall()
+
+            found = {str(r["sha1"]): r for r in rows}
+            for sha1 in sha1_list:
+                if str(sha1) not in found:
+                    continue
+                row = found[str(sha1)]
+                old_rel = str(row["rel_fqn"]).replace("\\", "/")
+                if old_rel.startswith("_trash/") or old_rel.startswith("_stash/"):
+                    continue
+
+                old_full = config.archive_root / old_rel
+                if not old_full.exists():
+                    continue
+
+                new_rel_path = safe_destination_relative(target_dir_name, old_rel, str(sha1))
+                new_full = config.archive_root / new_rel_path
+                new_full.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old_full), str(new_full))
+                conn.execute(
+                    "UPDATE media SET rel_fqn=?, is_deleted=1 WHERE sha1=?",
+                    (str(new_rel_path).replace('/', '\\'), str(sha1)),
+                )
+
+            conn.commit()
+
+        invalidate_composites()
+        return True, None
+
+    def empty_trash_impl() -> tuple[bool, str | None]:
+        trash_root = config.archive_root / "_trash"
+        trash_root.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(config.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            trash_rows = conn.execute(
+                "SELECT sha1 FROM media WHERE rel_fqn LIKE '_trash/%' OR rel_fqn LIKE '_trash\\%'"
+            ).fetchall()
+            trash_sha1s = [str(r['sha1']) for r in trash_rows]
+
+            if trash_root.exists():
+                shutil.rmtree(trash_root, ignore_errors=True)
+            trash_root.mkdir(parents=True, exist_ok=True)
+
+            conn.execute("DELETE FROM media WHERE rel_fqn LIKE '_trash/%' OR rel_fqn LIKE '_trash\\%'")
+            conn.commit()
+
+        for sha1 in trash_sha1s:
+            thumb = config.thumb_dir / f"{sha1}.jpg"
+            if thumb.exists():
+                try:
+                    thumb.unlink()
+                except OSError:
+                    pass
+
+        invalidate_composites()
+        return True, None
+
     def rotate_media_by_sha(sha1: str, degrees: int) -> tuple[bool, str | None]:
         with sqlite3.connect(config.db_path) as conn:
             row = conn.execute("SELECT rel_fqn FROM media WHERE sha1=?", (sha1,)).fetchone()
@@ -1076,6 +1239,35 @@ def create_app(config: ArchiveConfig) -> Flask:
             invalidate_composites()
 
         return jsonify({"status": "ok", "results": results})
+
+    @app.route("/api/move_to_trash", methods=["POST"])
+    def move_to_trash():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        ok, message = move_media_records([str(x) for x in sha1_list], "_trash")
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 400
+        return jsonify({"status": "ok"})
+
+    @app.route("/api/move_to_stash", methods=["POST"])
+    def move_to_stash():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        ok, message = move_media_records([str(x) for x in sha1_list], "_stash")
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 400
+        return jsonify({"status": "ok"})
+
+    @app.route("/api/empty_trash", methods=["POST"])
+    def empty_trash():
+        ok, message = empty_trash_impl()
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 400
+        return jsonify({"status": "ok"})
 
     @app.route("/")
     @app.route("/timeline")

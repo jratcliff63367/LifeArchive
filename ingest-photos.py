@@ -8,7 +8,7 @@ from datetime import datetime
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 # --- CONFIGURATION ---
-SOURCES = [r"e:\topaz-undated"]
+SOURCES = [r"F:\Terry's Pictures for website", r"F:\GoogleTakeout\jratcliffscarab\Takeout\Google Photos"]
 DEST_ROOT = r"C:\website-test"
 
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
@@ -18,7 +18,7 @@ THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
 LOG_INTERVAL = 100
 HEARTBEAT_SECONDS = 10.0
 COMMIT_INTERVAL = 100
-
++
 # Minimum source image size to accept into the archive
 MIN_WIDTH = 500
 MIN_HEIGHT = 300
