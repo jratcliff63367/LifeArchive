@@ -465,6 +465,72 @@ HTML_TEMPLATE = r"""
             font-weight: 800;
         }
 
+        .lb-tab-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 18px 0 16px;
+        }
+        .lb-tab {
+            background: #1b1b1b;
+            color: #aaa;
+            border: 1px solid #333;
+            border-radius: 999px;
+            padding: 7px 12px;
+            font-size: 0.72em;
+            font-weight: 900;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            cursor: pointer;
+        }
+        .lb-tab.active {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+        .lb-section {
+            display: none;
+        }
+        .lb-section.active {
+            display: block;
+        }
+        .lb-kv {
+            display: grid;
+            grid-template-columns: 140px 1fr;
+            gap: 8px 12px;
+            align-items: start;
+            font-size: 0.88em;
+        }
+        .lb-k {
+            color: #8d8d8d;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-size: 0.78em;
+        }
+        .lb-v {
+            color: #fff;
+            word-break: break-word;
+        }
+        .lb-empty {
+            color: #777;
+            font-size: 0.9em;
+            font-style: italic;
+        }
+        #lb-raw {
+            width: 100%;
+            min-height: 280px;
+            background: #171717;
+            border: 1px solid #333;
+            color: #ddd;
+            border-radius: 10px;
+            padding: 14px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+        }
+
     </style>
 </head>
 <body>
@@ -606,8 +672,22 @@ HTML_TEMPLATE = r"""
         <div style="position:absolute; bottom:30px; right:30px; background:#222; padding:12px 24px; border-radius:40px; cursor:pointer; font-weight:800; z-index:10006; border:1px solid #444; color:var(--accent);" onclick="toggleSidebar()">CURATE (E)</div>
 
         <div id="lb-sidebar" onclick="event.stopPropagation()">
-            <h2 style="margin:0; color:var(--accent);">Curation</h2>
+            <h2 style="margin:0; color:var(--accent);">Inspect</h2>
             <div id="meta-file" style="color:#888; font-size:0.8em; margin-top:20px; word-break:break-all; font-weight:700;"></div>
+            <div id="lb-tab-row" class="lb-tab-row"></div>
+
+            <div id="lb-section-overview" class="lb-section active">
+                <div id="lb-overview" class="lb-kv"></div>
+            </div>
+
+            <div id="lb-section-technical" class="lb-section">
+                <div id="lb-technical" class="lb-kv"></div>
+            </div>
+
+            <div id="lb-section-raw" class="lb-section">
+                <pre id="lb-raw"></pre>
+            </div>
+
             <hr style="border:0; border-top:1px solid #333; margin:30px 0;">
             <label style="font-size:0.7em; color:#666; font-weight:900; letter-spacing:1px;">NOTES</label>
             <textarea id="input-notes" style="width:100%; background:#222; border:1px solid #444; color:#fff; padding:15px; margin-top:10px; border-radius:8px; resize:none;" rows="8" placeholder="Notes..."></textarea>
@@ -620,6 +700,99 @@ HTML_TEMPLATE = r"""
         let curI = 0;
         let menuSha1 = '';
         let selectedSha1s = new Set();
+        let currentMeta = null;
+        let currentTab = 'overview';
+
+        function renderKV(containerId, rows) {
+            const el = document.getElementById(containerId);
+            if (!el) return;
+            if (!rows || rows.length === 0) {
+                el.innerHTML = '<div class="lb-empty">No data available.</div>';
+                return;
+            }
+            el.innerHTML = rows.map(row =>
+                `<div class="lb-k">${row[0]}</div><div class="lb-v">${row[1]}</div>`
+            ).join('');
+        }
+
+        function setActiveMetaTab(tabName) {
+            currentTab = tabName;
+            document.querySelectorAll('#lb-tab-row .lb-tab').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tabName);
+            });
+            document.querySelectorAll('#lb-sidebar .lb-section').forEach(sec => {
+                sec.classList.remove('active');
+            });
+            const target = document.getElementById('lb-section-' + tabName);
+            if (target) target.classList.add('active');
+        }
+
+        function buildMetaTabs(availableTabs) {
+            const row = document.getElementById('lb-tab-row');
+            if (!row) return;
+            row.innerHTML = '';
+            for (const tabName of availableTabs) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'lb-tab' + (tabName === currentTab ? ' active' : '');
+                btn.dataset.tab = tabName;
+                btn.textContent = tabName.charAt(0).toUpperCase() + tabName.slice(1);
+                btn.onclick = () => setActiveMetaTab(tabName);
+                row.appendChild(btn);
+            }
+            if (!availableTabs.includes(currentTab)) {
+                currentTab = availableTabs[0] || 'overview';
+            }
+            setActiveMetaTab(currentTab);
+        }
+
+        async function loadLightboxMetadata() {
+            if (!curM || !manifests[curM] || !manifests[curM][curI]) return;
+            const item = manifests[curM][curI];
+            try {
+                const resp = await fetch('/api/lightbox_meta/' + encodeURIComponent(item.sha1));
+                const data = await resp.json();
+                currentMeta = data;
+                const overview = data.overview || {};
+                const technical = data.technical || {};
+                const raw = data.raw || {};
+                const overviewRows = [
+                    ['Filename', overview.original_filename || item.filename || ''],
+                    ['Path', overview.rel_fqn || item.path || ''],
+                    ['Date', overview.final_dt || ''],
+                    ['Date Source', overview.dt_source || ''],
+                    ['Dimensions', overview.dimensions || ''],
+                    ['Tags', overview.tags || ''],
+                    ['Deleted', String(overview.is_deleted ?? '')],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+                renderKV('lb-overview', overviewRows);
+
+                const techRows = [
+                    ['Technical Score', technical.technical_score || ''],
+                    ['Sharpness', technical.sharpness || ''],
+                    ['Contrast', technical.contrast || ''],
+                    ['Brightness', technical.brightness || ''],
+                    ['Edge Density', technical.edge_density || ''],
+                    ['Resolution Score', technical.resolution_score || ''],
+                    ['Model Version', technical.model_version || ''],
+                    ['Scored At', technical.scored_at || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
+                renderKV('lb-technical', techRows);
+                const rawEl = document.getElementById('lb-raw');
+                if (rawEl) rawEl.textContent = JSON.stringify(raw, null, 2);
+                const availableTabs = ['overview'];
+                if (techRows.length > 0) availableTabs.push('technical');
+                availableTabs.push('raw');
+                buildMetaTabs(availableTabs);
+            } catch (err) {
+                renderKV('lb-overview', [['Error', 'Failed to load metadata']]);
+                renderKV('lb-technical', []);
+                const rawEl = document.getElementById('lb-raw');
+                if (rawEl) rawEl.textContent = String(err);
+                buildMetaTabs(['overview', 'raw']);
+            }
+        }
 
         function handleGridClick(e, key) {
             if (e.target.closest('a') || e.target.closest('.tag-pill')) return;
@@ -644,6 +817,7 @@ HTML_TEMPLATE = r"""
             const path = item.path.split('/').map(encodeURIComponent).join('/');
             document.getElementById('lb-img').src = '/media/' + path + '?t=' + Date.now();
             document.getElementById('meta-file').innerText = item.filename;
+            loadLightboxMetadata();
         }
 
         function changeImg(step) {
@@ -870,6 +1044,7 @@ class ArchiveConfig:
     assets_dir: Path
     thumb_dir: Path
     composite_dir: Path
+    technical_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1057,6 +1232,83 @@ class ArchiveStore:
             for item in media_list
         ]
 
+    def get_lightbox_metadata(self, sha1: str) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "overview": {},
+            "technical": {},
+            "raw": {},
+        }
+
+        if not self.config.db_path.exists():
+            return result
+
+        with sqlite3.connect(self.config.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM media WHERE sha1=?", (sha1,)).fetchone()
+
+        media_row = dict(row) if row else {}
+        if media_row:
+            path_tags = str(media_row.get("path_tags") or "")
+            custom_tags = str(media_row.get("custom_tags") or "")
+            raw_tags = f"{path_tags},{custom_tags}"
+            tags = sorted({
+                t.strip().title()
+                for t in raw_tags.split(",")
+                if t.strip() and not self.is_excluded_tag(t)
+            })
+            dimensions = ""
+            full_path = self.config.archive_root / str(media_row.get("rel_fqn", "")).replace("\\", "/")
+            try:
+                if full_path.exists():
+                    with Image.open(full_path) as img:
+                        dimensions = f"{img.width} x {img.height}"
+            except Exception:
+                dimensions = ""
+
+            result["overview"] = {
+                "sha1": sha1,
+                "original_filename": media_row.get("original_filename") or "",
+                "rel_fqn": str(media_row.get("rel_fqn") or "").replace("\\", "/"),
+                "final_dt": media_row.get("final_dt") or "",
+                "dt_source": media_row.get("dt_source") or "",
+                "path_tags": path_tags,
+                "custom_tags": custom_tags,
+                "tags": ", ".join(tags),
+                "custom_notes": media_row.get("custom_notes") or "",
+                "is_deleted": media_row.get("is_deleted"),
+                "dimensions": dimensions,
+            }
+
+        if self.config.technical_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.technical_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    tech_row = conn.execute("SELECT * FROM image_scores WHERE sha1=?", (sha1,)).fetchone()
+                if tech_row:
+                    tr = dict(tech_row)
+                    result["technical"] = {
+                        "width": tr.get("width"),
+                        "height": tr.get("height"),
+                        "sharpness": f"{float(tr.get('sharpness', 0)):.2f}" if tr.get("sharpness") is not None else "",
+                        "contrast": f"{float(tr.get('contrast', 0)):.2f}" if tr.get("contrast") is not None else "",
+                        "brightness": f"{float(tr.get('brightness', 0)):.2f}" if tr.get("brightness") is not None else "",
+                        "edge_density": f"{float(tr.get('edge_density', 0)):.4f}" if tr.get("edge_density") is not None else "",
+                        "resolution_score": f"{float(tr.get('resolution_score', 0)):.4f}" if tr.get("resolution_score") is not None else "",
+                        "technical_score": f"{float(tr.get('technical_score', 0)):.4f}" if tr.get("technical_score") is not None else "",
+                        "model_version": tr.get("model_version") or "",
+                        "scored_at": tr.get("scored_at") or "",
+                    }
+            except Exception:
+                pass
+
+        result["raw"] = {
+            "overview": result["overview"],
+            "technical": result["technical"],
+            "technical_db_path": str(self.config.technical_db_path),
+        }
+        return result
+
+
 
 def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> ArchiveConfig:
     root = Path(archive_root)
@@ -1066,6 +1318,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         assets_dir=root / "_web_layout" / "assets",
         thumb_dir=root / "_thumbs",
         composite_dir=root / "_thumbs" / "_composites",
+        technical_db_path=root / "technical_scores.sqlite",
         theme_color=theme_color,
     )
 
@@ -1267,6 +1520,12 @@ def create_app(config: ArchiveConfig) -> Flask:
         if not ok:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
+
+
+    @app.route("/api/lightbox_meta/<sha1>")
+    def lightbox_meta(sha1: str):
+        store.load_cache()
+        return jsonify(store.get_lightbox_metadata(sha1))
 
     @app.route("/")
     @app.route("/timeline")
