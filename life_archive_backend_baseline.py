@@ -273,10 +273,31 @@ HTML_TEMPLATE = r"""
             align-items: center;
             justify-content: center;
             user-select: none;
+            padding: 20px;
+            box-sizing: border-box;
         }
         #lightbox.active { display: flex; }
+        #lb-shell {
+            position: relative;
+            display: flex;
+            align-items: stretch;
+            width: min(1800px, calc(100vw - 40px));
+            height: calc(100vh - 40px);
+            min-width: 0;
+            min-height: 0;
+        }
+        #lb-stage {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
         #lb-img {
-            max-width: 85%;
+            max-width: 100%;
             max-height: 85vh;
             object-fit: contain;
             box-shadow: 0 0 80px rgba(0, 0, 0, 0.8);
@@ -301,14 +322,14 @@ HTML_TEMPLATE = r"""
             position: absolute;
             top: 0;
             bottom: 0;
-            width: 12%;
+            width: 90px;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
             transition: 0.3s;
             font-size: 3em;
-            color: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.14);
             z-index: 10002;
         }
         .lb-nav:hover {
@@ -317,21 +338,42 @@ HTML_TEMPLATE = r"""
         }
         #lb-prev { left: 0; }
         #lb-next { right: 0; }
-        #lb-sidebar {
-            position: fixed;
-            top: 0;
-            right: -450px;
-            width: 400px;
-            height: 100vh;
-            background: #111;
-            border-left: 1px solid #333;
-            padding: 60px 30px;
-            transition: 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 10005;
-            box-shadow: -20px 0 50px rgba(0, 0, 0, 0.5);
-            overflow-y: auto;
+        #lb-curate-btn {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            background: #222;
+            padding: 12px 24px;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: 800;
+            z-index: 10006;
+            border: 1px solid #444;
+            color: var(--accent);
         }
-        #lb-sidebar.visible { right: 0; }
+        #lb-sidebar {
+            position: relative;
+            width: 0;
+            height: 100%;
+            background: #111;
+            border-left: 0 solid #333;
+            padding: 60px 0;
+            transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+                        padding 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+                        border-color 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 10005;
+            box-shadow: none;
+            overflow-y: auto;
+            overflow-x: hidden;
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+        #lb-sidebar.visible {
+            width: 400px;
+            padding: 60px 30px;
+            border-left-width: 1px;
+            box-shadow: -20px 0 50px rgba(0, 0, 0, 0.5);
+        }
         #context-menu {
             display: none;
             position: fixed;
@@ -664,14 +706,16 @@ HTML_TEMPLATE = r"""
     </div>
 
     <div id="lightbox" onclick="if(event.target===this) closeLB()">
-        <div class="lb-close" onclick="closeLB()">&times;</div>
-        <div id="lb-prev" class="lb-nav" onclick="changeImg(-1)">&#10094;</div>
-        <img id="lb-img" src="" oncontextmenu="handleCtxFromLightbox(event)">
-        <div id="lb-next" class="lb-nav" onclick="changeImg(1)">&#10095;</div>
+        <div id="lb-shell" onclick="event.stopPropagation()">
+            <div class="lb-close" onclick="closeLB()">&times;</div>
+            <div id="lb-stage">
+                <div id="lb-prev" class="lb-nav" onclick="changeImg(-1)">&#10094;</div>
+                <img id="lb-img" src="" oncontextmenu="handleCtxFromLightbox(event)">
+                <div id="lb-next" class="lb-nav" onclick="changeImg(1)">&#10095;</div>
+                <div id="lb-curate-btn" onclick="toggleSidebar()">CURATE (E)</div>
+            </div>
 
-        <div style="position:absolute; bottom:30px; right:30px; background:#222; padding:12px 24px; border-radius:40px; cursor:pointer; font-weight:800; z-index:10006; border:1px solid #444; color:var(--accent);" onclick="toggleSidebar()">CURATE (E)</div>
-
-        <div id="lb-sidebar" onclick="event.stopPropagation()">
+            <div id="lb-sidebar" onclick="event.stopPropagation()">
             <h2 style="margin:0; color:var(--accent);">Inspect</h2>
             <div id="meta-file" style="color:#888; font-size:0.8em; margin-top:20px; word-break:break-all; font-weight:700;"></div>
             <div id="lb-tab-row" class="lb-tab-row"></div>
@@ -691,6 +735,7 @@ HTML_TEMPLATE = r"""
             <hr style="border:0; border-top:1px solid #333; margin:30px 0;">
             <label style="font-size:0.7em; color:#666; font-weight:900; letter-spacing:1px;">NOTES</label>
             <textarea id="input-notes" style="width:100%; background:#222; border:1px solid #444; color:#fff; padding:15px; margin-top:10px; border-radius:8px; resize:none;" rows="8" placeholder="Notes..."></textarea>
+            </div>
         </div>
     </div>
 
