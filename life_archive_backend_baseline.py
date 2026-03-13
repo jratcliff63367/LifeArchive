@@ -728,6 +728,11 @@ HTML_TEMPLATE = r"""
                 <div id="lb-technical" class="lb-kv"></div>
             </div>
 
+            <div id="lb-section-faces" class="lb-section">
+                <div id="lb-faces-summary" class="lb-kv"></div>
+                <div id="lb-faces-boxes" style="margin-top:16px;"></div>
+            </div>
+
             <div id="lb-section-raw" class="lb-section">
                 <pre id="lb-raw"></pre>
             </div>
@@ -791,6 +796,25 @@ HTML_TEMPLATE = r"""
             setActiveMetaTab(currentTab);
         }
 
+        function renderFaceBoxes(boxes) {
+            const el = document.getElementById('lb-faces-boxes');
+            if (!el) return;
+            if (!boxes || boxes.length === 0) {
+                el.innerHTML = '<div class="lb-empty">No face boxes available.</div>';
+                return;
+            }
+            const html = boxes.map((box, idx) => {
+                const rows = [
+                    ['Face', idx + 1],
+                    ['Abs Box', `${box.x}, ${box.y}, ${box.w}, ${box.h}`],
+                    ['Norm Box', `${Number(box.x_norm).toFixed(4)}, ${Number(box.y_norm).toFixed(4)}, ${Number(box.w_norm).toFixed(4)}, ${Number(box.h_norm).toFixed(4)}`],
+                    ['Area Ratio', Number(box.area_ratio).toFixed(4)],
+                ];
+                return `<div style="margin-bottom:14px; padding:12px; border:1px solid #333; border-radius:10px; background:#171717;">${rows.map(r => `<div class="lb-kv" style="grid-template-columns:110px 1fr; margin-bottom:6px;"><div class="lb-k">${r[0]}</div><div class="lb-v">${r[1]}</div></div>`).join('')}</div>`;
+            }).join('');
+            el.innerHTML = html;
+        }
+
         async function loadLightboxMetadata() {
             if (!curM || !manifests[curM] || !manifests[curM][curI]) return;
             const item = manifests[curM][curI];
@@ -800,6 +824,9 @@ HTML_TEMPLATE = r"""
                 currentMeta = data;
                 const overview = data.overview || {};
                 const technical = data.technical || {};
+                const faces = data.faces || {};
+                const faceSummary = faces.summary || {};
+                const faceBoxes = faces.boxes || [];
                 const raw = data.raw || {};
                 const overviewRows = [
                     ['Filename', overview.original_filename || item.filename || ''],
@@ -823,16 +850,30 @@ HTML_TEMPLATE = r"""
                     ['Scored At', technical.scored_at || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
+                const faceRows = [
+                    ['Face Count', faceSummary.face_count ?? ''],
+                    ['Prominent Faces', faceSummary.prominent_face_count ?? ''],
+                    ['Largest Face Ratio', faceSummary.largest_face_area_ratio ?? ''],
+                    ['Has Prominent Face', faceSummary.has_prominent_face ?? ''],
+                    ['Model Version', faceSummary.model_version || ''],
+                    ['Scored At', faceSummary.scored_at || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
                 renderKV('lb-technical', techRows);
+                renderKV('lb-faces-summary', faceRows);
+                renderFaceBoxes(faceBoxes);
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = JSON.stringify(raw, null, 2);
                 const availableTabs = ['overview'];
                 if (techRows.length > 0) availableTabs.push('technical');
+                if (faceRows.length > 0 || faceBoxes.length > 0) availableTabs.push('faces');
                 availableTabs.push('raw');
                 buildMetaTabs(availableTabs);
             } catch (err) {
                 renderKV('lb-overview', [['Error', 'Failed to load metadata']]);
                 renderKV('lb-technical', []);
+                renderKV('lb-faces-summary', []);
+                renderFaceBoxes([]);
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = String(err);
                 buildMetaTabs(['overview', 'raw']);
@@ -1090,6 +1131,7 @@ class ArchiveConfig:
     thumb_dir: Path
     composite_dir: Path
     technical_db_path: Path
+    face_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1281,6 +1323,7 @@ class ArchiveStore:
         result: dict[str, Any] = {
             "overview": {},
             "technical": {},
+            "faces": {"summary": {}, "boxes": []},
             "raw": {},
         }
 
@@ -1346,10 +1389,53 @@ class ArchiveStore:
             except Exception:
                 pass
 
+        if self.config.face_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.face_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    face_summary_row = conn.execute("SELECT * FROM image_face_summary WHERE sha1=?", (sha1,)).fetchone()
+                    face_box_rows = conn.execute("SELECT * FROM image_faces WHERE sha1=? ORDER BY face_index", (sha1,)).fetchall()
+
+                if face_summary_row:
+                    fs = dict(face_summary_row)
+                    result["faces"]["summary"] = {
+                        "width": fs.get("width"),
+                        "height": fs.get("height"),
+                        "face_count": fs.get("face_count"),
+                        "prominent_face_count": fs.get("prominent_face_count"),
+                        "largest_face_area_ratio": f"{float(fs.get('largest_face_area_ratio', 0)):.4f}" if fs.get("largest_face_area_ratio") is not None else "",
+                        "has_prominent_face": fs.get("has_prominent_face"),
+                        "model_version": fs.get("model_version") or "",
+                        "scored_at": fs.get("scored_at") or "",
+                    }
+
+                if face_box_rows:
+                    result["faces"]["boxes"] = []
+                    for r in face_box_rows:
+                        fr = dict(r)
+                        result["faces"]["boxes"].append({
+                            "face_index": fr.get("face_index"),
+                            "x": fr.get("x"),
+                            "y": fr.get("y"),
+                            "w": fr.get("w"),
+                            "h": fr.get("h"),
+                            "x_norm": fr.get("x_norm"),
+                            "y_norm": fr.get("y_norm"),
+                            "w_norm": fr.get("w_norm"),
+                            "h_norm": fr.get("h_norm"),
+                            "area_ratio": fr.get("area_ratio"),
+                            "img_width": fr.get("img_width"),
+                            "img_height": fr.get("img_height"),
+                        })
+            except Exception:
+                pass
+
         result["raw"] = {
             "overview": result["overview"],
             "technical": result["technical"],
+            "faces": result["faces"],
             "technical_db_path": str(self.config.technical_db_path),
+            "face_db_path": str(self.config.face_db_path),
         }
         return result
 
@@ -1364,6 +1450,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         thumb_dir=root / "_thumbs",
         composite_dir=root / "_thumbs" / "_composites",
         technical_db_path=root / "technical_scores.sqlite",
+        face_db_path=root / "face_scores.sqlite",
         theme_color=theme_color,
     )
 
