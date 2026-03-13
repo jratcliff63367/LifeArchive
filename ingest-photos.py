@@ -13,18 +13,11 @@ from PIL import Image, ExifTags, ImageOps
 # ------------------------------------------------------------
 
 SOURCES = [
-r"F:\Construction",
-r"F:\CriticalBackup",
-r"F:\facebook",
-r"F:\FacebookData",
-r"F:\FileHistory",
-r"F:\ForceFieldVideos",
-r"F:\OldMediaTransfer",
-r"F:\photographs",
-r"F:\Pictures",
+r"C:\Photos from 2025",
+
 ]
 
-DEST_ROOT = r"C:\website-test"
+DEST_ROOT = r"C:\website-photos"
 
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")

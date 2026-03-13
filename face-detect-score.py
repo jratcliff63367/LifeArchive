@@ -8,9 +8,9 @@ from datetime import datetime
 # CONFIG
 # ------------------------------------------------------------
 
-ARCHIVE_DB = r"C:\website-test\archive_index.db"
-IMAGE_ROOT = r"C:\website-test"
-OUTPUT_DB = r"C:\website-test\face_scores.sqlite"
+ARCHIVE_DB = r"C:\website-photos\archive_index.db"
+IMAGE_ROOT = r"C:\website-photos"
+OUTPUT_DB = r"C:\website-photos\face_scores.sqlite"
 
 MODEL_VERSION = "opencv_haar_face_v2"
 
