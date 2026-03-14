@@ -763,6 +763,10 @@ HTML_TEMPLATE = r"""
                 <div id="lb-faces-boxes" style="margin-top:16px;"></div>
             </div>
 
+            <div id="lb-section-aesthetic" class="lb-section">
+                <div id="lb-aesthetic" class="lb-kv"></div>
+            </div>
+
             <div id="lb-section-raw" class="lb-section">
                 <pre id="lb-raw"></pre>
             </div>
@@ -906,6 +910,7 @@ HTML_TEMPLATE = r"""
                 const faces = data.faces || {};
                 const faceSummary = faces.summary || {};
                 const faceBoxes = faces.boxes || [];
+                const aesthetic = data.aesthetic || {};
                 const raw = data.raw || {};
                 const overviewRows = [
                     ['Filename', overview.original_filename || item.filename || ''],
@@ -938,8 +943,23 @@ HTML_TEMPLATE = r"""
                     ['Scored At', faceSummary.scored_at || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
+                const aestheticRows = [
+                    ['Overall Aesthetic Score', aesthetic.overall_aesthetic_score || ''],
+                    ['Aesthetic Score', aesthetic.aesthetic_score || ''],
+                    ['Composition Score', aesthetic.composition_score || ''],
+                    ['Subject Prominence', aesthetic.subject_prominence_score || ''],
+                    ['Interest Score', aesthetic.interest_score || ''],
+                    ['Saliency Score', aesthetic.saliency_score || ''],
+                    ['Scorer Name', aesthetic.scorer_name || ''],
+                    ['Model Name', aesthetic.model_name || ''],
+                    ['Model Version', aesthetic.model_version || ''],
+                    ['Scored At', aesthetic.scored_at || ''],
+                    ['Warnings', aesthetic.warnings || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
                 renderKV('lb-technical', techRows);
                 renderKV('lb-faces-summary', faceRows);
+                renderKV('lb-aesthetic', aestheticRows);
                 renderFaceBoxes(faceBoxes);
 
                 const showFacesCb = document.getElementById('lb-show-faces');
@@ -957,12 +977,14 @@ HTML_TEMPLATE = r"""
                 const availableTabs = ['overview'];
                 if (techRows.length > 0) availableTabs.push('technical');
                 if (faceRows.length > 0 || faceBoxes.length > 0) availableTabs.push('faces');
+                if (aestheticRows.length > 0) availableTabs.push('aesthetic');
                 availableTabs.push('raw');
                 buildMetaTabs(availableTabs);
             } catch (err) {
                 renderKV('lb-overview', [['Error', 'Failed to load metadata']]);
                 renderKV('lb-technical', []);
                 renderKV('lb-faces-summary', []);
+                renderKV('lb-aesthetic', []);
                 renderFaceBoxes([]);
                 clearFaceOverlay();
                 const rawEl = document.getElementById('lb-raw');
@@ -1227,6 +1249,7 @@ class ArchiveConfig:
     composite_dir: Path
     technical_db_path: Path
     face_db_path: Path
+    aesthetic_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1419,6 +1442,7 @@ class ArchiveStore:
             "overview": {},
             "technical": {},
             "faces": {"summary": {}, "boxes": []},
+            "aesthetic": {},
             "raw": {},
         }
 
@@ -1525,12 +1549,37 @@ class ArchiveStore:
             except Exception:
                 pass
 
+        if self.config.aesthetic_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.aesthetic_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    aesthetic_row = conn.execute("SELECT * FROM aesthetic_scores WHERE sha1=?", (sha1,)).fetchone()
+                if aesthetic_row:
+                    ar = dict(aesthetic_row)
+                    result["aesthetic"] = {
+                        "aesthetic_score": f"{float(ar.get('aesthetic_score', 0)):.4f}" if ar.get("aesthetic_score") is not None else "",
+                        "composition_score": f"{float(ar.get('composition_score', 0)):.4f}" if ar.get("composition_score") is not None else "",
+                        "subject_prominence_score": f"{float(ar.get('subject_prominence_score', 0)):.4f}" if ar.get("subject_prominence_score") is not None else "",
+                        "interest_score": f"{float(ar.get('interest_score', 0)):.4f}" if ar.get("interest_score") is not None else "",
+                        "saliency_score": f"{float(ar.get('saliency_score', 0)):.4f}" if ar.get("saliency_score") is not None else "",
+                        "overall_aesthetic_score": f"{float(ar.get('overall_aesthetic_score', 0)):.4f}" if ar.get("overall_aesthetic_score") is not None else "",
+                        "scorer_name": ar.get("scorer_name") or "",
+                        "model_name": ar.get("model_name") or "",
+                        "model_version": ar.get("model_version") or "",
+                        "scored_at": ar.get("scored_at") or "",
+                        "warnings": ar.get("warnings") or "",
+                    }
+            except Exception:
+                pass
+
         result["raw"] = {
             "overview": result["overview"],
             "technical": result["technical"],
             "faces": result["faces"],
+            "aesthetic": result["aesthetic"],
             "technical_db_path": str(self.config.technical_db_path),
             "face_db_path": str(self.config.face_db_path),
+            "aesthetic_db_path": str(self.config.aesthetic_db_path),
         }
         return result
 
@@ -1546,6 +1595,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         composite_dir=root / "_thumbs" / "_composites",
         technical_db_path=root / "technical_scores.sqlite",
         face_db_path=root / "face_scores.sqlite",
+        aesthetic_db_path=root / "aesthetic_scores.sqlite",
         theme_color=theme_color,
     )
 
