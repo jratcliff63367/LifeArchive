@@ -302,6 +302,31 @@ HTML_TEMPLATE = r"""
             object-fit: contain;
             box-shadow: 0 0 80px rgba(0, 0, 0, 0.8);
         }
+        #lb-face-overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 10003;
+        }
+        .lb-face-box {
+            position: absolute;
+            border: 2px solid rgba(183, 119, 255, 0.95);
+            box-shadow: 0 0 0 1px rgba(0,0,0,0.5) inset;
+            border-radius: 4px;
+            background: rgba(183, 119, 255, 0.08);
+        }
+        .lb-face-label {
+            position: absolute;
+            top: -22px;
+            left: 0;
+            background: rgba(183, 119, 255, 0.95);
+            color: #111;
+            font-size: 11px;
+            font-weight: 800;
+            padding: 2px 6px;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
         .lb-close {
             position: absolute;
             top: 20px;
@@ -711,6 +736,7 @@ HTML_TEMPLATE = r"""
             <div id="lb-stage">
                 <div id="lb-prev" class="lb-nav" onclick="changeImg(-1)">&#10094;</div>
                 <img id="lb-img" src="" oncontextmenu="handleCtxFromLightbox(event)">
+                <div id="lb-face-overlay"></div>
                 <div id="lb-next" class="lb-nav" onclick="changeImg(1)">&#10095;</div>
                 <div id="lb-curate-btn" onclick="toggleSidebar()">CURATE (E)</div>
             </div>
@@ -729,6 +755,10 @@ HTML_TEMPLATE = r"""
             </div>
 
             <div id="lb-section-faces" class="lb-section">
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12px; color:#ddd; font-weight:700;">
+                    <input id="lb-show-faces" type="checkbox" style="accent-color: var(--accent);">
+                    Show face boxes on image
+                </label>
                 <div id="lb-faces-summary" class="lb-kv"></div>
                 <div id="lb-faces-boxes" style="margin-top:16px;"></div>
             </div>
@@ -752,6 +782,7 @@ HTML_TEMPLATE = r"""
         let selectedSha1s = new Set();
         let currentMeta = null;
         let currentTab = 'overview';
+        let showFaceOverlay = false;
 
         function renderKV(containerId, rows) {
             const el = document.getElementById(containerId);
@@ -804,15 +835,63 @@ HTML_TEMPLATE = r"""
                 return;
             }
             const html = boxes.map((box, idx) => {
+                const conf = box.confidence != null ? Number(box.confidence).toFixed(3) : '';
                 const rows = [
                     ['Face', idx + 1],
                     ['Abs Box', `${box.x}, ${box.y}, ${box.w}, ${box.h}`],
                     ['Norm Box', `${Number(box.x_norm).toFixed(4)}, ${Number(box.y_norm).toFixed(4)}, ${Number(box.w_norm).toFixed(4)}, ${Number(box.h_norm).toFixed(4)}`],
                     ['Area Ratio', Number(box.area_ratio).toFixed(4)],
+                    ['Confidence', conf],
                 ];
                 return `<div style="margin-bottom:14px; padding:12px; border:1px solid #333; border-radius:10px; background:#171717;">${rows.map(r => `<div class="lb-kv" style="grid-template-columns:110px 1fr; margin-bottom:6px;"><div class="lb-k">${r[0]}</div><div class="lb-v">${r[1]}</div></div>`).join('')}</div>`;
             }).join('');
             el.innerHTML = html;
+        }
+
+        function clearFaceOverlay() {
+            const overlay = document.getElementById('lb-face-overlay');
+            if (overlay) overlay.innerHTML = '';
+        }
+
+        function renderFaceOverlay() {
+            const overlay = document.getElementById('lb-face-overlay');
+            const img = document.getElementById('lb-img');
+            const stage = document.getElementById('lb-stage');
+            if (!overlay || !img || !stage) return;
+            overlay.innerHTML = '';
+
+            const boxes = (((currentMeta || {}).faces || {}).boxes) || [];
+            if (!showFaceOverlay || boxes.length === 0) return;
+            if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
+
+            const imgRect = img.getBoundingClientRect();
+            const stageRect = stage.getBoundingClientRect();
+            const left0 = imgRect.left - stageRect.left;
+            const top0 = imgRect.top - stageRect.top;
+            const displayW = imgRect.width;
+            const displayH = imgRect.height;
+
+            boxes.forEach((box, idx) => {
+                const left = left0 + (Number(box.x_norm) * displayW);
+                const top = top0 + (Number(box.y_norm) * displayH);
+                const width = Math.max(2, Number(box.w_norm) * displayW);
+                const height = Math.max(2, Number(box.h_norm) * displayH);
+
+                const div = document.createElement('div');
+                div.className = 'lb-face-box';
+                div.style.left = `${left}px`;
+                div.style.top = `${top}px`;
+                div.style.width = `${width}px`;
+                div.style.height = `${height}px`;
+
+                const label = document.createElement('div');
+                label.className = 'lb-face-label';
+                const conf = box.confidence != null ? ` ${Number(box.confidence).toFixed(2)}` : '';
+                label.textContent = `Face ${idx + 1}${conf}`;
+                div.appendChild(label);
+
+                overlay.appendChild(div);
+            });
         }
 
         async function loadLightboxMetadata() {
@@ -862,6 +941,17 @@ HTML_TEMPLATE = r"""
                 renderKV('lb-technical', techRows);
                 renderKV('lb-faces-summary', faceRows);
                 renderFaceBoxes(faceBoxes);
+
+                const showFacesCb = document.getElementById('lb-show-faces');
+                if (showFacesCb) {
+                    showFacesCb.checked = showFaceOverlay;
+                    showFacesCb.onchange = () => {
+                        showFaceOverlay = !!showFacesCb.checked;
+                        renderFaceOverlay();
+                    };
+                }
+                renderFaceOverlay();
+
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = JSON.stringify(raw, null, 2);
                 const availableTabs = ['overview'];
@@ -874,6 +964,7 @@ HTML_TEMPLATE = r"""
                 renderKV('lb-technical', []);
                 renderKV('lb-faces-summary', []);
                 renderFaceBoxes([]);
+                clearFaceOverlay();
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = String(err);
                 buildMetaTabs(['overview', 'raw']);
@@ -901,8 +992,11 @@ HTML_TEMPLATE = r"""
         function updateLB() {
             const item = manifests[curM][curI];
             const path = item.path.split('/').map(encodeURIComponent).join('/');
-            document.getElementById('lb-img').src = '/media/' + path + '?t=' + Date.now();
+            const lbImg = document.getElementById('lb-img');
+            lbImg.onload = () => renderFaceOverlay();
+            lbImg.src = '/media/' + path + '?t=' + Date.now();
             document.getElementById('meta-file').innerText = item.filename;
+            clearFaceOverlay();
             loadLightboxMetadata();
         }
 
@@ -919,6 +1013,7 @@ HTML_TEMPLATE = r"""
         function closeLB() {
             document.getElementById('lightbox').classList.remove('active');
             document.getElementById('lb-sidebar').classList.remove('visible');
+            clearFaceOverlay();
         }
 
         function refreshSelectionUI() {

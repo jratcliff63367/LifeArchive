@@ -2,6 +2,7 @@ import os
 import sqlite3
 import cv2
 import time
+import urllib.request
 from datetime import datetime
 
 # ------------------------------------------------------------
@@ -12,24 +13,44 @@ ARCHIVE_DB = r"C:\website-photos\archive_index.db"
 IMAGE_ROOT = r"C:\website-photos"
 OUTPUT_DB = r"C:\website-photos\face_scores.sqlite"
 
-MODEL_VERSION = "opencv_haar_face_v2"
+MODEL_DIR = r"C:\website-photos\models"
+MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
 
-PROGRESS_INTERVAL = 5      # seconds
-COMMIT_INTERVAL = 500      # rows
+# Official OpenCV YuNet model mirror
+MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 
-# A face is considered "prominent" if it occupies at least this fraction
-# of the total image area.
+MODEL_VERSION = "opencv_yunet_v1"
+
+PROGRESS_INTERVAL = 5
+COMMIT_INTERVAL = 500
+
+# Detection parameters
+SCORE_THRESHOLD = 0.85
+NMS_THRESHOLD = 0.30
+TOP_K = 5000
 PROMINENT_FACE_THRESHOLD = 0.05
 
 # ------------------------------------------------------------
-# FACE DETECTOR
+# MODEL SETUP
 # ------------------------------------------------------------
 
-CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-FACE_CASCADE = cv2.CascadeClassifier(CASCADE_PATH)
+def ensure_model():
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    if os.path.exists(MODEL_PATH):
+        return
+    print(f"Downloading YuNet model to: {MODEL_PATH}")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print("Model download complete.")
 
-if FACE_CASCADE.empty():
-    raise RuntimeError(f"Failed to load face cascade: {CASCADE_PATH}")
+def create_detector(width: int, height: int):
+    return cv2.FaceDetectorYN.create(
+        MODEL_PATH,
+        "",
+        (width, height),
+        SCORE_THRESHOLD,
+        NMS_THRESHOLD,
+        TOP_K
+    )
 
 # ------------------------------------------------------------
 # DATABASE
@@ -69,6 +90,18 @@ def init_db(conn):
         h_norm REAL NOT NULL,
 
         area_ratio REAL NOT NULL,
+        confidence REAL NOT NULL,
+
+        right_eye_x REAL,
+        right_eye_y REAL,
+        left_eye_x REAL,
+        left_eye_y REAL,
+        nose_x REAL,
+        nose_y REAL,
+        mouth_right_x REAL,
+        mouth_right_y REAL,
+        mouth_left_x REAL,
+        mouth_left_y REAL,
 
         PRIMARY KEY (sha1, face_index)
     )
@@ -87,27 +120,31 @@ def init_db(conn):
 
 def detect_faces(path):
     img = cv2.imread(path)
-
     if img is None:
         return None
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    height, width = gray.shape
+    height, width = img.shape[:2]
+    detector = create_detector(width, height)
 
-    faces = FACE_CASCADE.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(30, 30)
-    )
+    _, faces = detector.detect(img)
 
     image_area = float(width * height)
     face_rows = []
-
     largest_face_area_ratio = 0.0
     prominent_face_count = 0
 
-    for idx, (x, y, w, h) in enumerate(faces):
+    if faces is None:
+        faces = []
+
+    for idx, face in enumerate(faces):
+        x, y, w, h = face[0], face[1], face[2], face[3]
+        score = float(face[14])
+
+        x = max(0, int(round(x)))
+        y = max(0, int(round(y)))
+        w = max(1, int(round(w)))
+        h = max(1, int(round(h)))
+
         area_ratio = (w * h) / image_area
         largest_face_area_ratio = max(largest_face_area_ratio, area_ratio)
 
@@ -116,21 +153,28 @@ def detect_faces(path):
 
         face_rows.append({
             "face_index": idx,
-
             "img_width": int(width),
             "img_height": int(height),
-
-            "x": int(x),
-            "y": int(y),
-            "w": int(w),
-            "h": int(h),
-
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
             "x_norm": float(x / width),
             "y_norm": float(y / height),
             "w_norm": float(w / width),
             "h_norm": float(h / height),
-
-            "area_ratio": float(area_ratio)
+            "area_ratio": float(area_ratio),
+            "confidence": score,
+            "right_eye_x": float(face[4]),
+            "right_eye_y": float(face[5]),
+            "left_eye_x": float(face[6]),
+            "left_eye_y": float(face[7]),
+            "nose_x": float(face[8]),
+            "nose_y": float(face[9]),
+            "mouth_right_x": float(face[10]),
+            "mouth_right_y": float(face[11]),
+            "mouth_left_x": float(face[12]),
+            "mouth_left_y": float(face[13]),
         })
 
     summary = {
@@ -149,16 +193,16 @@ def detect_faces(path):
 # ------------------------------------------------------------
 
 def main():
+    ensure_model()
+
     print("Opening archive database...")
     archive_conn = sqlite3.connect(ARCHIVE_DB)
 
     print("Opening output database...")
     out_conn = sqlite3.connect(OUTPUT_DB)
-
     init_db(out_conn)
 
     cur = archive_conn.cursor()
-
     print("Reading archive index...")
     cur.execute("SELECT sha1, rel_fqn FROM media WHERE is_deleted = 0")
     rows = cur.fetchall()
@@ -212,15 +256,19 @@ def main():
 
         for face in face_rows:
             out_conn.execute("""
-            INSERT INTO image_faces
-            (
+            INSERT INTO image_faces (
                 sha1, face_index,
                 img_width, img_height,
                 x, y, w, h,
                 x_norm, y_norm, w_norm, h_norm,
-                area_ratio
+                area_ratio, confidence,
+                right_eye_x, right_eye_y,
+                left_eye_x, left_eye_y,
+                nose_x, nose_y,
+                mouth_right_x, mouth_right_y,
+                mouth_left_x, mouth_left_y
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 sha1,
                 face["face_index"],
@@ -234,7 +282,18 @@ def main():
                 face["y_norm"],
                 face["w_norm"],
                 face["h_norm"],
-                face["area_ratio"]
+                face["area_ratio"],
+                face["confidence"],
+                face["right_eye_x"],
+                face["right_eye_y"],
+                face["left_eye_x"],
+                face["left_eye_y"],
+                face["nose_x"],
+                face["nose_y"],
+                face["mouth_right_x"],
+                face["mouth_right_y"],
+                face["mouth_left_x"],
+                face["mouth_left_y"],
             ))
 
         now = time.time()

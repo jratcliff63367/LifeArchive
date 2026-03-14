@@ -1,10 +1,11 @@
-
 import os
 import sqlite3
 import hashlib
 import time
 import shutil
-from datetime import datetime
+import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image, ExifTags, ImageOps
 
@@ -28,10 +29,31 @@ MIN_HEIGHT = 300
 PROGRESS_INTERVAL = 10
 COMMIT_INTERVAL = 100
 
+MIN_VALID_YEAR = 1950
+MAX_VALID_YEAR = 2026
 
 # ------------------------------------------------------------
 # UTILITY FUNCTIONS
 # ------------------------------------------------------------
+
+EXIF_TAG_NAME_BY_ID = ExifTags.TAGS
+EXIF_DATETIME_TAGS = {
+    "DateTimeOriginal",
+    "DateTimeDigitized",
+    "DateTime",
+}
+XMP_DATE_PATTERNS = [
+    r'(?:xmp:CreateDate|photoshop:DateCreated|xmp:ModifyDate|exif:DateTimeOriginal)\s*=\s*"([^"]+)"',
+    r'<(?:xmp:CreateDate|photoshop:DateCreated|xmp:ModifyDate|exif:DateTimeOriginal)>([^<]+)</',
+]
+FILENAME_DATE_PATTERNS = [
+    # PXL_20250331_194558354.jpg
+    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})(?!\d)'),
+    # IMG_2025-03-31_19-45-58
+    re.compile(r'(?<!\d)(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})(?!\d)'),
+    # 20250331_194558
+    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})(?!\d)'),
+]
 
 def compute_sha1(path: str) -> str:
     sha1 = hashlib.sha1()
@@ -53,24 +75,177 @@ def safe_datetime_from_timestamp(ts):
         return None
 
 
-def get_exif_datetime(path: str):
-    try:
-        with Image.open(path) as img:
-            exif = img.getexif()
-            if not exif:
-                return None
+def is_valid_dt(dt):
+    return dt is not None and MIN_VALID_YEAR <= dt.year <= MAX_VALID_YEAR
 
-            for tag_id, value in exif.items():
-                tag_name = ExifTags.TAGS.get(tag_id, tag_id)
-                if tag_name == "DateTimeOriginal" and value:
-                    try:
-                        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-                    except Exception:
-                        return None
+
+def strip_tz(dt: datetime) -> datetime:
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def parse_exif_style_datetime(value: str):
+    if not value:
+        return None
+    value = value.strip().replace("\x00", "")
+    # Common EXIF style
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            return dt if is_valid_dt(dt) else None
+        except Exception:
+            pass
+    # ISO-like forms
+    value2 = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(value2)
+        dt = strip_tz(dt)
+        return dt if is_valid_dt(dt) else None
     except Exception:
         return None
 
+
+def get_pillow_exif_datetimes(path: str):
+    found = []
+    try:
+        with Image.open(path) as img:
+            exif = img.getexif()
+            if exif:
+                for tag_id, value in exif.items():
+                    tag_name = EXIF_TAG_NAME_BY_ID.get(tag_id, tag_id)
+                    if tag_name in EXIF_DATETIME_TAGS and value:
+                        dt = parse_exif_style_datetime(str(value))
+                        if is_valid_dt(dt):
+                            found.append((tag_name, dt))
+    except Exception:
+        pass
+    return found
+
+
+def extract_xmp_datetimes(path: str):
+    found = []
+    try:
+        with open(path, "rb") as f:
+            data = f.read(512 * 1024)  # enough for APP1/XMP in normal files
+        text = data.decode("utf-8", errors="ignore")
+        for pattern in XMP_DATE_PATTERNS:
+            for match in re.finditer(pattern, text):
+                dt = parse_exif_style_datetime(match.group(1))
+                if is_valid_dt(dt):
+                    found.append(("XMP", dt))
+    except Exception:
+        pass
+    return found
+
+
+def google_takeout_sidecar_candidates(file_path: str):
+    p = Path(file_path)
+    candidates = []
+
+    # Most common: IMG_1234.JPG.json
+    candidates.append(p.with_name(p.name + ".json"))
+
+    # Some workflows may strip extension before .json
+    candidates.append(p.with_suffix(p.suffix + ".json"))
+    candidates.append(p.with_suffix(".json"))
+
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for c in candidates:
+        s = str(c)
+        if s not in seen:
+            out.append(c)
+            seen.add(s)
+    return out
+
+
+def get_google_takeout_datetime(file_path: str):
+    for candidate in google_takeout_sidecar_candidates(file_path):
+        if not candidate.exists():
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Common Google Photos Takeout schema
+            ts = None
+            if isinstance(data, dict):
+                photo_taken = data.get("photoTakenTime")
+                if isinstance(photo_taken, dict):
+                    ts = photo_taken.get("timestamp")
+
+                if ts is None:
+                    creation_time = data.get("creationTime")
+                    if isinstance(creation_time, dict):
+                        ts = creation_time.get("timestamp")
+
+                if ts is None:
+                    # Sometimes timestamp-like values may be present in nested metadata
+                    for key in ("timestamp",):
+                        if key in data and str(data.get(key)).isdigit():
+                            ts = data.get(key)
+                            break
+
+            if ts is not None:
+                try:
+                    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone().replace(tzinfo=None)
+                    if is_valid_dt(dt):
+                        return dt, f"Google Takeout JSON: {candidate.name}"
+                except Exception:
+                    pass
+        except Exception:
+            continue
+    return None, None
+
+
+def get_filename_datetime(file_path: str):
+    name = Path(file_path).name
+    for pattern in FILENAME_DATE_PATTERNS:
+        m = pattern.search(name)
+        if not m:
+            continue
+        try:
+            parts = [int(x) for x in m.groups()]
+            dt = datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
+            if is_valid_dt(dt):
+                return dt
+        except Exception:
+            continue
     return None
+
+
+def get_best_datetime(file_path: str):
+    # 1) Standard EXIF date fields
+    exif_found = get_pillow_exif_datetimes(file_path)
+    priority = {
+        "DateTimeOriginal": 0,
+        "DateTimeDigitized": 1,
+        "DateTime": 2,
+    }
+    if exif_found:
+        exif_found.sort(key=lambda x: priority.get(x[0], 99))
+        tag_name, dt = exif_found[0]
+        return dt, f"EXIF: {tag_name}"
+
+    # 2) XMP metadata embedded in the file
+    xmp_found = extract_xmp_datetimes(file_path)
+    if xmp_found:
+        _, dt = xmp_found[0]
+        return dt, "XMP"
+
+    # 3) Google Takeout sidecar JSON
+    dt, src = get_google_takeout_datetime(file_path)
+    if dt is not None:
+        return dt, src
+
+    # 4) Filename-derived datetime (useful for Pixel / phone exports)
+    dt = get_filename_datetime(file_path)
+    if dt is not None:
+        return dt, "Filename Pattern"
+
+    return None, None
 
 
 def get_image_size(path: str):
@@ -93,11 +268,9 @@ def resolve_file_date(file_path: str, archive_rel_path: str):
     if "undated" in archive_rel_path.lower():
         return "0000-00-00 00:00:00", "Path Override: Undated"
 
-    exif_dt = get_exif_datetime(file_path)
-    if exif_dt is not None:
-        year = exif_dt.year
-        if 1950 <= year <= 2026:
-            return exif_dt.strftime("%Y-%m-%d %H:%M:%S"), "EXIF"
+    best_dt, best_source = get_best_datetime(file_path)
+    if is_valid_dt(best_dt):
+        return best_dt.strftime("%Y-%m-%d %H:%M:%S"), best_source
 
     try:
         mtime = os.path.getmtime(file_path)
@@ -178,7 +351,7 @@ def make_path_tags(source_base: str, rel_dir: str) -> str:
 # ------------------------------------------------------------
 
 def run_ingest():
-    print("--- STARTING ROBUST INGEST (V4.4 Rerun Feedback + Restored Layout) ---")
+    print("--- STARTING ROBUST INGEST (V4.5 Robust Date Extraction) ---")
 
     os.makedirs(DEST_ROOT, exist_ok=True)
     os.makedirs(THUMB_DIR, exist_ok=True)
@@ -222,7 +395,6 @@ def run_ingest():
                 archive_rel_path = os.path.join(source_base, rel_dir) if rel_dir else source_base
                 rel_fqn = os.path.join(source_base, rel_dir, name) if rel_dir else os.path.join(source_base, name)
 
-                # IMPORTANT: restore old layout, copy directly under DEST_ROOT
                 dest_path = os.path.join(DEST_ROOT, rel_fqn)
 
                 try:
