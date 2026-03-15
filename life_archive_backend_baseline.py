@@ -308,6 +308,43 @@ HTML_TEMPLATE = r"""
             pointer-events: none;
             z-index: 10003;
         }
+        #lb-ai-summary-overlay {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            bottom: 26px;
+            max-width: min(72%, 900px);
+            padding: 14px 20px;
+            border-radius: 16px;
+            background: rgba(0, 0, 0, 0.64);
+            backdrop-filter: blur(6px);
+            color: #fff;
+            font-size: 28px;
+            line-height: 1.3;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            text-align: center;
+            pointer-events: none;
+            display: none;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+            z-index: 10004;
+        }
+        #lb-ai-summary-overlay.show {
+            display: block;
+        }
+        .lb-inline-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 14px;
+            font-size: 12px;
+            color: #ddd;
+            font-weight: 700;
+        }
+        .lb-inline-toggle input {
+            accent-color: var(--accent);
+        }
         .lb-face-box {
             position: absolute;
             border: 2px solid rgba(183, 119, 255, 0.95);
@@ -737,6 +774,7 @@ HTML_TEMPLATE = r"""
                 <div id="lb-prev" class="lb-nav" onclick="changeImg(-1)">&#10094;</div>
                 <img id="lb-img" src="" oncontextmenu="handleCtxFromLightbox(event)">
                 <div id="lb-face-overlay"></div>
+                <div id="lb-ai-summary-overlay"></div>
                 <div id="lb-next" class="lb-nav" onclick="changeImg(1)">&#10095;</div>
                 <div id="lb-curate-btn" onclick="toggleSidebar()">CURATE (E)</div>
             </div>
@@ -769,6 +807,14 @@ HTML_TEMPLATE = r"""
 
             <div id="lb-section-semantic" class="lb-section">
                 <div id="lb-semantic" class="lb-kv"></div>
+            </div>
+
+            <div id="lb-section-ai-summary" class="lb-section">
+                <label class="lb-inline-toggle">
+                    <input id="lb-show-ai-summary" type="checkbox">
+                    Show AI summary on image
+                </label>
+                <div id="lb-ai-summary" class="lb-kv"></div>
             </div>
 
             <div id="lb-section-raw" class="lb-section">
@@ -825,7 +871,16 @@ HTML_TEMPLATE = r"""
                 btn.type = 'button';
                 btn.className = 'lb-tab' + (tabName === currentTab ? ' active' : '');
                 btn.dataset.tab = tabName;
-                btn.textContent = tabName.charAt(0).toUpperCase() + tabName.slice(1);
+                const tabLabelMap = {
+                    'overview': 'Overview',
+                    'technical': 'Technical',
+                    'faces': 'Faces',
+                    'aesthetic': 'Aesthetic',
+                    'semantic': 'Semantic',
+                    'ai-summary': 'AI Summary',
+                    'raw': 'Raw',
+                };
+                btn.textContent = tabLabelMap[tabName] || (tabName.charAt(0).toUpperCase() + tabName.slice(1));
                 btn.onclick = () => setActiveMetaTab(tabName);
                 row.appendChild(btn);
             }
@@ -859,6 +914,16 @@ HTML_TEMPLATE = r"""
         function clearFaceOverlay() {
             const overlay = document.getElementById('lb-face-overlay');
             if (overlay) overlay.innerHTML = '';
+        }
+
+        function updateAiSummaryOverlay() {
+            const overlay = document.getElementById('lb-ai-summary-overlay');
+            const cb = document.getElementById('lb-show-ai-summary');
+            if (!overlay) return;
+            const summary = (((currentMeta || {}).ai_summary || {}).summary_text || '').trim();
+            const shouldShow = !!(cb && cb.checked && summary.length > 0);
+            overlay.textContent = summary;
+            overlay.classList.toggle('show', shouldShow);
         }
 
         function renderFaceOverlay() {
@@ -916,6 +981,7 @@ HTML_TEMPLATE = r"""
                 const faceBoxes = faces.boxes || [];
                 const aesthetic = data.aesthetic || {};
                 const semantic = data.semantic || {};
+                const aiSummary = data.ai_summary || {};
                 const raw = data.raw || {};
                 const overviewRows = [
                     ['Filename', overview.original_filename || item.filename || ''],
@@ -983,10 +1049,19 @@ HTML_TEMPLATE = r"""
                     ['Warnings', semantic.warnings || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
+                const aiSummaryRows = [
+                    ['Summary', aiSummary.summary_text || ''],
+                    ['Model Name', aiSummary.model_name || ''],
+                    ['Model Version', aiSummary.model_version || ''],
+                    ['Scored At', aiSummary.scored_at || ''],
+                    ['Warnings', aiSummary.warnings || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
                 renderKV('lb-technical', techRows);
                 renderKV('lb-faces-summary', faceRows);
                 renderKV('lb-aesthetic', aestheticRows);
                 renderKV('lb-semantic', semanticRows);
+                renderKV('lb-ai-summary', aiSummaryRows);
                 renderFaceBoxes(faceBoxes);
 
                 const showFacesCb = document.getElementById('lb-show-faces');
@@ -997,7 +1072,15 @@ HTML_TEMPLATE = r"""
                         renderFaceOverlay();
                     };
                 }
+
+                const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
+                if (showAiSummaryCb) {
+                    showAiSummaryCb.checked = false;
+                    showAiSummaryCb.onchange = () => updateAiSummaryOverlay();
+                }
+
                 renderFaceOverlay();
+                updateAiSummaryOverlay();
 
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = JSON.stringify(raw, null, 2);
@@ -1006,6 +1089,7 @@ HTML_TEMPLATE = r"""
                 if (faceRows.length > 0 || faceBoxes.length > 0) availableTabs.push('faces');
                 if (aestheticRows.length > 0) availableTabs.push('aesthetic');
                 if (semanticRows.length > 0) availableTabs.push('semantic');
+                if (aiSummaryRows.length > 0) availableTabs.push('ai-summary');
                 availableTabs.push('raw');
                 buildMetaTabs(availableTabs);
             } catch (err) {
@@ -1014,8 +1098,12 @@ HTML_TEMPLATE = r"""
                 renderKV('lb-faces-summary', []);
                 renderKV('lb-aesthetic', []);
                 renderKV('lb-semantic', []);
+                renderKV('lb-ai-summary', []);
                 renderFaceBoxes([]);
                 clearFaceOverlay();
+                const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
+                if (showAiSummaryCb) showAiSummaryCb.checked = false;
+                updateAiSummaryOverlay();
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = String(err);
                 buildMetaTabs(['overview', 'raw']);
@@ -1065,6 +1153,10 @@ HTML_TEMPLATE = r"""
             document.getElementById('lightbox').classList.remove('active');
             document.getElementById('lb-sidebar').classList.remove('visible');
             clearFaceOverlay();
+            const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
+            if (showAiSummaryCb) showAiSummaryCb.checked = false;
+            currentMeta = null;
+            updateAiSummaryOverlay();
         }
 
         function refreshSelectionUI() {
@@ -1280,6 +1372,7 @@ class ArchiveConfig:
     face_db_path: Path
     aesthetic_db_path: Path
     semantic_db_path: Path
+    ai_summary_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1474,6 +1567,7 @@ class ArchiveStore:
             "faces": {"summary": {}, "boxes": []},
             "aesthetic": {},
             "semantic": {},
+            "ai_summary": {},
             "raw": {},
         }
 
@@ -1649,16 +1743,35 @@ class ArchiveStore:
             except Exception:
                 pass
 
+        if self.config.ai_summary_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.ai_summary_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    summary_row = conn.execute("SELECT * FROM ai_summaries WHERE sha1=?", (sha1,)).fetchone()
+                if summary_row:
+                    sr = dict(summary_row)
+                    result["ai_summary"] = {
+                        "summary_text": sr.get("summary_text") or "",
+                        "model_name": sr.get("model_name") or "",
+                        "model_version": sr.get("model_version") or "",
+                        "scored_at": sr.get("scored_at") or "",
+                        "warnings": sr.get("warnings") or "",
+                    }
+            except Exception:
+                pass
+
         result["raw"] = {
             "overview": result["overview"],
             "technical": result["technical"],
             "faces": result["faces"],
             "aesthetic": result["aesthetic"],
             "semantic": result["semantic"],
+            "ai_summary": result["ai_summary"],
             "technical_db_path": str(self.config.technical_db_path),
             "face_db_path": str(self.config.face_db_path),
             "aesthetic_db_path": str(self.config.aesthetic_db_path),
             "semantic_db_path": str(self.config.semantic_db_path),
+            "ai_summary_db_path": str(self.config.ai_summary_db_path),
         }
         return result
 
@@ -1676,6 +1789,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         face_db_path=root / "face_scores.sqlite",
         aesthetic_db_path=root / "aesthetic_scores.sqlite",
         semantic_db_path=root / "semantic_scores.sqlite",
+        ai_summary_db_path=root / "ai_summaries.sqlite",
         theme_color=theme_color,
     )
 

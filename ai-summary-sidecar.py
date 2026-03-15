@@ -21,8 +21,8 @@ OUTPUT_DB = r"C:\website-photos\ai_summaries.sqlite"
 IMAGE_ROOT = r"C:\website-photos"
 
 # Set to a small integer while evaluating output quality.
-# Set to None for a full run later.
-LIMIT_IMAGES = 50
+# Set to None for a full run.
+LIMIT_IMAGES = None
 
 # If True, delete and rebuild summary sidecar content.
 REBUILD_DATABASE = False
@@ -46,11 +46,11 @@ TEMPERATURE = 1.0
 DO_SAMPLE = False
 
 # Progress / checkpointing.
-HEARTBEAT_EVERY_N = 10
-COMMIT_EVERY_N = 25
+HEARTBEAT_EVERY_N = 25
+COMMIT_EVERY_N = 100
 
 # Print each generated summary as it is produced.
-PRINT_EACH_SUMMARY = True
+PRINT_EACH_SUMMARY = False
 
 # If True, any model-load failure aborts.
 REQUIRE_CAPTION_MODEL = True
@@ -124,8 +124,8 @@ def clean_caption(text: str) -> str:
     t = " ".join((text or "").strip().split())
     if not t:
         return ""
-    # Light cleanup only. Keep it natural and short.
     t = t.replace("close up", "close-up")
+    t = t.capitalize().rstrip(".")
     if len(t) > 240:
         t = t[:240].rstrip()
     return t
@@ -283,7 +283,7 @@ def load_caption_model() -> CaptionContext:
     model.eval()
 
     model_name = CAPTION_MODEL
-    model_version = "blip-base-caption-v1"
+    model_version = "blip-base-caption-v2"
 
     print("BLIP ready.")
     return CaptionContext(
@@ -396,9 +396,8 @@ def main() -> int:
             elapsed = max(1e-6, time.time() - start_time)
             rate = attempted / elapsed
             eta_sec = ((total - attempted) / max(1e-6, rate)) if attempted < total else 0.0
-            pct = (attempted / total * 100.0) if total else 100.0
             print(
-                f"[Progress] {attempted}/{total} | {pct:.1f}% | "
+                f"[Progress] {attempted}/{total} | {attempted / total * 100.0 if total else 100.0:.1f}% | "
                 f"scored={scored} failed={failed} | {rate:.2f} img/sec | ETA {eta_sec/60:.1f}m"
             )
 
