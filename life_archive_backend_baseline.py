@@ -767,6 +767,10 @@ HTML_TEMPLATE = r"""
                 <div id="lb-aesthetic" class="lb-kv"></div>
             </div>
 
+            <div id="lb-section-semantic" class="lb-section">
+                <div id="lb-semantic" class="lb-kv"></div>
+            </div>
+
             <div id="lb-section-raw" class="lb-section">
                 <pre id="lb-raw"></pre>
             </div>
@@ -911,6 +915,7 @@ HTML_TEMPLATE = r"""
                 const faceSummary = faces.summary || {};
                 const faceBoxes = faces.boxes || [];
                 const aesthetic = data.aesthetic || {};
+                const semantic = data.semantic || {};
                 const raw = data.raw || {};
                 const overviewRows = [
                     ['Filename', overview.original_filename || item.filename || ''],
@@ -957,9 +962,31 @@ HTML_TEMPLATE = r"""
                     ['Warnings', aesthetic.warnings || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
+                const semanticRows = [
+                    ['Semantic Score', semantic.semantic_score || ''],
+                    ['Scene Type', semantic.scene_type || ''],
+                    ['Top Labels', semantic.top_labels_display || ''],
+                    ['AI Tags', semantic.ai_tags_display || ''],
+                    ['Contains People', semantic.contains_people ?? ''],
+                    ['Contains Animals', semantic.contains_animals ?? ''],
+                    ['Contains Text', semantic.contains_text ?? ''],
+                    ['Document Like', semantic.is_document_like ?? ''],
+                    ['Screenshot Like', semantic.is_screenshot_like ?? ''],
+                    ['Landscape Like', semantic.is_landscape_like ?? ''],
+                    ['Food Like', semantic.is_food_like ?? ''],
+                    ['Indoor Like', semantic.is_indoor_like ?? ''],
+                    ['Outdoor Like', semantic.is_outdoor_like ?? ''],
+                    ['Scorer Name', semantic.scorer_name || ''],
+                    ['Model Name', semantic.model_name || ''],
+                    ['Model Version', semantic.model_version || ''],
+                    ['Scored At', semantic.scored_at || ''],
+                    ['Warnings', semantic.warnings || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
                 renderKV('lb-technical', techRows);
                 renderKV('lb-faces-summary', faceRows);
                 renderKV('lb-aesthetic', aestheticRows);
+                renderKV('lb-semantic', semanticRows);
                 renderFaceBoxes(faceBoxes);
 
                 const showFacesCb = document.getElementById('lb-show-faces');
@@ -978,6 +1005,7 @@ HTML_TEMPLATE = r"""
                 if (techRows.length > 0) availableTabs.push('technical');
                 if (faceRows.length > 0 || faceBoxes.length > 0) availableTabs.push('faces');
                 if (aestheticRows.length > 0) availableTabs.push('aesthetic');
+                if (semanticRows.length > 0) availableTabs.push('semantic');
                 availableTabs.push('raw');
                 buildMetaTabs(availableTabs);
             } catch (err) {
@@ -985,6 +1013,7 @@ HTML_TEMPLATE = r"""
                 renderKV('lb-technical', []);
                 renderKV('lb-faces-summary', []);
                 renderKV('lb-aesthetic', []);
+                renderKV('lb-semantic', []);
                 renderFaceBoxes([]);
                 clearFaceOverlay();
                 const rawEl = document.getElementById('lb-raw');
@@ -1250,6 +1279,7 @@ class ArchiveConfig:
     technical_db_path: Path
     face_db_path: Path
     aesthetic_db_path: Path
+    semantic_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1443,6 +1473,7 @@ class ArchiveStore:
             "technical": {},
             "faces": {"summary": {}, "boxes": []},
             "aesthetic": {},
+            "semantic": {},
             "raw": {},
         }
 
@@ -1572,14 +1603,62 @@ class ArchiveStore:
             except Exception:
                 pass
 
+        if self.config.semantic_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.semantic_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    semantic_row = conn.execute("SELECT * FROM semantic_scores WHERE sha1=?", (sha1,)).fetchone()
+                if semantic_row:
+                    sr = dict(semantic_row)
+                    top_labels_raw = sr.get("top_labels_json") or "[]"
+                    ai_tags_raw = sr.get("ai_tags_json") or "[]"
+                    try:
+                        top_labels = json.loads(top_labels_raw) if isinstance(top_labels_raw, str) else top_labels_raw
+                    except Exception:
+                        top_labels = []
+                    try:
+                        ai_tags = json.loads(ai_tags_raw) if isinstance(ai_tags_raw, str) else ai_tags_raw
+                    except Exception:
+                        ai_tags = []
+                    result["semantic"] = {
+                        "semantic_score": f"{float(sr.get('semantic_score', 0)):.4f}" if sr.get("semantic_score") is not None else "",
+                        "scene_type": sr.get("scene_type") or "",
+                        "top_labels_json": top_labels_raw,
+                        "ai_tags_json": ai_tags_raw,
+                        "top_labels_display": ", ".join(
+                            f"{item.get('label')} ({float(item.get('score', 0)):.2f})"
+                            for item in top_labels[:6]
+                            if isinstance(item, dict) and item.get('label')
+                        ),
+                        "ai_tags_display": ", ".join(str(tag) for tag in ai_tags),
+                        "contains_people": sr.get("contains_people"),
+                        "contains_animals": sr.get("contains_animals"),
+                        "contains_text": sr.get("contains_text"),
+                        "is_document_like": sr.get("is_document_like"),
+                        "is_screenshot_like": sr.get("is_screenshot_like"),
+                        "is_landscape_like": sr.get("is_landscape_like"),
+                        "is_food_like": sr.get("is_food_like"),
+                        "is_indoor_like": sr.get("is_indoor_like"),
+                        "is_outdoor_like": sr.get("is_outdoor_like"),
+                        "scorer_name": sr.get("scorer_name") or "",
+                        "model_name": sr.get("model_name") or "",
+                        "model_version": sr.get("model_version") or "",
+                        "scored_at": sr.get("scored_at") or "",
+                        "warnings": sr.get("warnings") or "",
+                    }
+            except Exception:
+                pass
+
         result["raw"] = {
             "overview": result["overview"],
             "technical": result["technical"],
             "faces": result["faces"],
             "aesthetic": result["aesthetic"],
+            "semantic": result["semantic"],
             "technical_db_path": str(self.config.technical_db_path),
             "face_db_path": str(self.config.face_db_path),
             "aesthetic_db_path": str(self.config.aesthetic_db_path),
+            "semantic_db_path": str(self.config.semantic_db_path),
         }
         return result
 
@@ -1596,6 +1675,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         technical_db_path=root / "technical_scores.sqlite",
         face_db_path=root / "face_scores.sqlite",
         aesthetic_db_path=root / "aesthetic_scores.sqlite",
+        semantic_db_path=root / "semantic_scores.sqlite",
         theme_color=theme_color,
     )
 
