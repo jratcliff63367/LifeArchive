@@ -34,6 +34,7 @@ import argparse
 import calendar
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -639,6 +640,9 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
+        <div class="menu-item" onclick="selectByFormula('interesting', 1)">Select Most Interesting Picture</div>
+        <div class="menu-item" onclick="selectByFormula('cull', 1)">Select Best Picture for Culling</div>
+        <div class="menu-item" onclick="selectByFormula('cull', 2)">Select Best Two Pictures for Culling</div>
         <div class="menu-item" onclick="rotateImage(90)">Rotate 90° Clockwise ↻</div>
         <div class="menu-item" onclick="rotateImage(270)">Rotate 90° Counter ↺</div>
         <div class="menu-item" onclick="moveContextTo('trash')">Move to Trash</div>
@@ -1200,6 +1204,54 @@ HTML_TEMPLATE = r"""
                 return Array.from(selectedSha1s);
             }
             return [clickedSha1];
+        }
+
+        async function selectByFormula(mode, keepCount) {
+            const targets = getContextTargets(menuSha1);
+            document.getElementById('context-menu').style.display = 'none';
+            if (!targets || targets.length === 0) return;
+            if (targets.length <= keepCount) {
+                selectedSha1s = new Set(targets);
+                refreshSelectionUI();
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/select_by_formula', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sha1_list: targets,
+                        mode,
+                        keep_count: keepCount
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== 'ok') {
+                    alert(data.message || 'Selection formula failed.');
+                    return;
+                }
+
+                selectedSha1s = new Set(data.winners || []);
+                refreshSelectionUI();
+
+                if (Array.isArray(data.ranked)) {
+                    console.table(data.ranked.map(item => ({
+                        sha1: item.sha1,
+                        filename: item.filename || '',
+                        score: item.score,
+                        face_score: item.breakdown?.face_score ?? '',
+                        technical: item.breakdown?.technical_score ?? '',
+                        aesthetic: item.breakdown?.aesthetic_score ?? '',
+                        prominence: item.breakdown?.subject_prominence_score ?? '',
+                        semantic: item.breakdown?.semantic_score ?? '',
+                        note: item.breakdown?.note ?? ''
+                    })));
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Selection formula request failed.');
+            }
         }
 
         function handleCtx(e, sha1) {
@@ -1791,6 +1843,250 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
     )
 
 
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+
+def _face_score_from_meta(meta: dict[str, Any]) -> float:
+    faces = (meta.get("faces") or {}).get("summary") or {}
+    face_count = int(faces.get("face_count") or 0)
+    prominent_count = int(faces.get("prominent_face_count") or 0)
+    largest_ratio = _safe_float(faces.get("largest_face_area_ratio"), 0.0)
+
+    score = 0.0
+    if face_count > 0:
+        score += 0.30 * min(1.0, math.log1p(face_count))
+        score += 0.45 * min(1.0, largest_ratio / 0.18) if largest_ratio > 0 else 0.0
+        score += 0.15 * min(1.0, prominent_count / 2.0)
+        score += 0.10
+    return _clamp01(score)
+
+
+def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
+    technical = _safe_float((meta.get("technical") or {}).get("technical_score"), 0.0)
+    aesthetic_meta = meta.get("aesthetic") or {}
+    aesthetic = _safe_float(aesthetic_meta.get("overall_aesthetic_score"), 0.0)
+    if aesthetic <= 0:
+        aesthetic = _safe_float(aesthetic_meta.get("aesthetic_score"), 0.0)
+    subject_prominence = _safe_float(aesthetic_meta.get("subject_prominence_score"), 0.0)
+    semantic = _safe_float((meta.get("semantic") or {}).get("semantic_score"), 0.0)
+    face_score = _face_score_from_meta(meta)
+
+    sem = meta.get("semantic") or {}
+    contains_people = int(sem.get("contains_people") or 0)
+    contains_animals = int(sem.get("contains_animals") or 0)
+    is_document = int(sem.get("is_document_like") or 0)
+    is_screenshot = int(sem.get("is_screenshot_like") or 0)
+    is_landscape = int(sem.get("is_landscape_like") or 0)
+    is_food = int(sem.get("is_food_like") or 0)
+
+    ai_summary = ((meta.get("ai_summary") or {}).get("summary_text") or "").lower()
+    dog_bonus = 0.0
+    if any(term in ai_summary for term in ("dog", "puppy", "golden retriever", "great pyrenees", "pet")):
+        dog_bonus = 0.05
+
+    score = (
+        technical * 0.14 +
+        aesthetic * 0.20 +
+        subject_prominence * 0.22 +
+        semantic * 0.14 +
+        face_score * 0.30
+    )
+
+    note_parts = []
+    if contains_people:
+        score += 0.07
+        note_parts.append("people")
+    if contains_animals:
+        score += 0.06
+        note_parts.append("animals")
+        score += subject_prominence * 0.10
+        note_parts.append("animal_prominence")
+    if dog_bonus > 0:
+        score += dog_bonus
+        note_parts.append("dog_summary_bonus")
+    if is_landscape:
+        score += 0.03
+        note_parts.append("landscape")
+    if is_food:
+        score += 0.02
+        note_parts.append("food")
+
+    if technical < 0.25:
+        score *= 0.55
+        note_parts.append("low_tech_penalty")
+    if is_document:
+        score *= 0.45
+        note_parts.append("document_penalty")
+    if is_screenshot:
+        score *= 0.35
+        note_parts.append("screenshot_penalty")
+
+    return {
+        "score": round(_clamp01(score), 6),
+        "technical_score": round(technical, 6),
+        "aesthetic_score": round(aesthetic, 6),
+        "subject_prominence_score": round(subject_prominence, 6),
+        "semantic_score": round(semantic, 6),
+        "face_score": round(face_score, 6),
+        "note": ",".join(note_parts),
+    }
+
+
+def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
+    technical = _safe_float((meta.get("technical") or {}).get("technical_score"), 0.0)
+    aesthetic_meta = meta.get("aesthetic") or {}
+    aesthetic = _safe_float(aesthetic_meta.get("overall_aesthetic_score"), 0.0)
+    if aesthetic <= 0:
+        aesthetic = _safe_float(aesthetic_meta.get("aesthetic_score"), 0.0)
+    subject_prominence = _safe_float(aesthetic_meta.get("subject_prominence_score"), 0.0)
+    semantic = _safe_float((meta.get("semantic") or {}).get("semantic_score"), 0.0)
+    face_score = _face_score_from_meta(meta)
+
+    sem = meta.get("semantic") or {}
+    contains_people = int(sem.get("contains_people") or 0)
+    contains_animals = int(sem.get("contains_animals") or 0)
+    is_document = int(sem.get("is_document_like") or 0)
+    is_screenshot = int(sem.get("is_screenshot_like") or 0)
+
+    ai_summary = ((meta.get("ai_summary") or {}).get("summary_text") or "").lower()
+    dog_bonus = 0.0
+    if contains_animals and any(term in ai_summary for term in ("dog", "puppy", "pet")):
+        dog_bonus = 0.03
+
+    score = (
+        technical * 0.34 +
+        aesthetic * 0.20 +
+        subject_prominence * 0.26 +
+        face_score * 0.14 +
+        semantic * 0.06
+    )
+
+    note_parts = []
+    if contains_people:
+        score += 0.03
+        note_parts.append("people")
+    if contains_animals:
+        score += 0.04
+        score += subject_prominence * 0.08
+        note_parts.append("animals")
+        note_parts.append("animal_prominence")
+    if dog_bonus > 0:
+        score += dog_bonus
+        note_parts.append("dog_summary_bonus")
+
+    if technical < 0.20:
+        score *= 0.45
+        note_parts.append("low_tech_penalty")
+    if is_document:
+        score *= 0.70
+        note_parts.append("document_penalty")
+    if is_screenshot:
+        score *= 0.60
+        note_parts.append("screenshot_penalty")
+
+    return {
+        "score": round(_clamp01(score), 6),
+        "technical_score": round(technical, 6),
+        "aesthetic_score": round(aesthetic, 6),
+        "subject_prominence_score": round(subject_prominence, 6),
+        "semantic_score": round(semantic, 6),
+        "face_score": round(face_score, 6),
+        "note": ",".join(note_parts),
+    }
+
+def _rank_sha1s_for_mode(store: "ArchiveStore", sha1_list: list[str], mode: str) -> list[dict[str, Any]]:
+
+    technical = _safe_float((meta.get("technical") or {}).get("technical_score"), 0.0)
+    aesthetic = _safe_float((meta.get("aesthetic") or {}).get("overall_aesthetic_score"), 0.0)
+    if aesthetic <= 0:
+        aesthetic = _safe_float((meta.get("aesthetic") or {}).get("aesthetic_score"), 0.0)
+    semantic = _safe_float((meta.get("semantic") or {}).get("semantic_score"), 0.0)
+    face_score = _face_score_from_meta(meta)
+
+    sem = meta.get("semantic") or {}
+    is_document = int(sem.get("is_document_like") or 0)
+    is_screenshot = int(sem.get("is_screenshot_like") or 0)
+    contains_people = int(sem.get("contains_people") or 0)
+
+    score = (
+        technical * 0.42 +
+        aesthetic * 0.28 +
+        face_score * 0.22 +
+        semantic * 0.08
+    )
+
+    note_parts = []
+    if contains_people:
+        score += 0.03
+        note_parts.append("people")
+    if technical < 0.20:
+        score *= 0.45
+        note_parts.append("low_tech_penalty")
+    if is_document:
+        score *= 0.70
+        note_parts.append("document_penalty")
+    if is_screenshot:
+        score *= 0.60
+        note_parts.append("screenshot_penalty")
+
+    return {
+        "score": round(_clamp01(score), 6),
+        "technical_score": round(technical, 6),
+        "aesthetic_score": round(aesthetic, 6),
+        "semantic_score": round(semantic, 6),
+        "face_score": round(face_score, 6),
+        "note": ",".join(note_parts),
+    }
+
+
+def _rank_sha1s_for_mode(store: "ArchiveStore", sha1_list: list[str], mode: str) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    seen = set()
+    for sha1 in sha1_list:
+        sha1 = str(sha1)
+        if not sha1 or sha1 in seen:
+            continue
+        seen.add(sha1)
+        meta = store.get_lightbox_metadata(sha1)
+        if mode == "cull":
+            breakdown = _cull_score(meta)
+        else:
+            breakdown = _interesting_score(meta)
+
+        overview = meta.get("overview") or {}
+        ranked.append({
+            "sha1": sha1,
+            "filename": overview.get("original_filename") or "",
+            "score": breakdown["score"],
+            "breakdown": breakdown,
+        })
+
+    ranked.sort(
+        key=lambda item: (
+            item["score"],
+            item["breakdown"].get("face_score", 0.0),
+            item["breakdown"].get("aesthetic_score", 0.0),
+            item["breakdown"].get("technical_score", 0.0),
+        ),
+        reverse=True,
+    )
+    return ranked
+
 def create_app(config: ArchiveConfig) -> Flask:
     app = Flask(__name__)
     store = ArchiveStore(config)
@@ -1989,6 +2285,32 @@ def create_app(config: ArchiveConfig) -> Flask:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
 
+
+    @app.route("/api/select_by_formula", methods=["POST"])
+    def select_by_formula():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        mode = str(payload.get("mode") or "interesting").strip().lower()
+        keep_count = int(payload.get("keep_count") or 1)
+
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        if mode not in {"interesting", "cull"}:
+            return jsonify({"status": "error", "message": "invalid mode"}), 400
+        if keep_count < 1:
+            keep_count = 1
+
+        store.load_cache()
+        ranked = _rank_sha1s_for_mode(store, [str(x) for x in sha1_list], mode)
+        winners = [item["sha1"] for item in ranked[:keep_count]]
+
+        return jsonify({
+            "status": "ok",
+            "mode": mode,
+            "keep_count": keep_count,
+            "winners": winners,
+            "ranked": ranked,
+        })
 
     @app.route("/api/lightbox_meta/<sha1>")
     def lightbox_meta(sha1: str):
