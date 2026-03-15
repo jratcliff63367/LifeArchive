@@ -1433,6 +1433,7 @@ class ArchiveStore:
         self.undated_cache: list[dict[str, Any]] = []
         self.global_tags: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.hero_score_map: dict[str, float] = {}
+        self.hero_db_mtime: float = 0.0
         self.config.composite_dir.mkdir(parents=True, exist_ok=True)
 
     def is_excluded_tag(self, tag: str) -> bool:
@@ -1449,12 +1450,23 @@ class ArchiveStore:
                 "CREATE TABLE IF NOT EXISTS composite_cache (path_key TEXT PRIMARY KEY, sha1_list TEXT, composite_hash TEXT)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_media_dt ON media(final_dt)")
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(composite_cache)").fetchall()}
+            if "candidate_hash" not in cols:
+                conn.execute("ALTER TABLE composite_cache ADD COLUMN candidate_hash TEXT DEFAULT ''")
+            if "selection_version" not in cols:
+                conn.execute("ALTER TABLE composite_cache ADD COLUMN selection_version TEXT DEFAULT ''")
+            conn.commit()
 
 
     def load_hero_score_map(self) -> None:
         self.hero_score_map = {}
+        self.hero_db_mtime = 0.0
         if not self.config.hero_db_path.exists():
             return
+        try:
+            self.hero_db_mtime = self.config.hero_db_path.stat().st_mtime
+        except Exception:
+            self.hero_db_mtime = 0.0
         try:
             with sqlite3.connect(self.config.hero_db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1575,28 +1587,244 @@ class ArchiveStore:
             'weeks': weeks,
         }
 
+
+    def get_hero_score(self, item: dict[str, Any]) -> float:
+        return float(self.hero_score_map.get(str(item.get("sha1")), 0.0))
+
+    @staticmethod
+    def has_valid_gps(item: dict[str, Any]) -> bool:
+        try:
+            lat = float(item.get("latitude"))
+            lon = float(item.get("longitude"))
+            return abs(lat) > 0.000001 or abs(lon) > 0.000001
+        except Exception:
+            return False
+
+    @staticmethod
+    def _gps_bucket_key(item: dict[str, Any], precision: int = 3) -> tuple[float, float]:
+        return (
+            round(float(item.get("latitude") or 0.0), precision),
+            round(float(item.get("longitude") or 0.0), precision),
+        )
+
+    @staticmethod
+    def _candidate_hash(media_list: list[dict[str, Any]]) -> str:
+        sig = "|".join(sorted(str(item.get("sha1")) for item in media_list))
+        return hashlib.md5(sig.encode("utf-8")).hexdigest()
+
+    def _selection_version(self) -> str:
+        return f"geohero_v1|hero_mtime={int(self.hero_db_mtime)}"
+
+    def _choose_representative(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not items:
+            return None
+        return max(
+            items,
+            key=lambda item: (
+                self.get_hero_score(item),
+                str(item.get("final_dt") or ""),
+                str(item.get("sha1") or ""),
+            ),
+        )
+
+    def _gps_distance_sq(self, a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+    def _kmeans_pp_clusters(self, buckets: list[dict[str, Any]], k: int, iterations: int = 12) -> list[list[dict[str, Any]]]:
+        if not buckets:
+            return []
+        if len(buckets) <= k:
+            return [[b] for b in buckets]
+
+        points = [(float(b["centroid_lat"]), float(b["centroid_lon"])) for b in buckets]
+        weighted = sorted(
+            enumerate(buckets),
+            key=lambda pair: (
+                self.get_hero_score(pair[1].get("best_item") or {}),
+                pair[1].get("count", 0),
+            ),
+            reverse=True,
+        )
+        first_idx = weighted[0][0]
+        centers = [points[first_idx]]
+
+        while len(centers) < k:
+            dists = []
+            total = 0.0
+            for pt in points:
+                d2 = min(self._gps_distance_sq(pt, c) for c in centers)
+                dists.append(d2)
+                total += d2
+            if total <= 1e-12:
+                break
+            threshold = total / 2.0
+            accum = 0.0
+            chosen_idx = 0
+            for idx, d2 in enumerate(dists):
+                accum += d2
+                if accum >= threshold:
+                    chosen_idx = idx
+                    break
+            candidate = points[chosen_idx]
+            if candidate not in centers:
+                centers.append(candidate)
+            else:
+                for pt in points:
+                    if pt not in centers:
+                        centers.append(pt)
+                        break
+            if len(centers) >= len(points):
+                break
+
+        if not centers:
+            centers = [points[0]]
+
+        for _ in range(iterations):
+            assignments = [[] for _ in centers]
+            for bucket, pt in zip(buckets, points):
+                best_i = min(range(len(centers)), key=lambda i: self._gps_distance_sq(pt, centers[i]))
+                assignments[best_i].append(bucket)
+
+            new_centers = []
+            for idx, cluster in enumerate(assignments):
+                if not cluster:
+                    new_centers.append(centers[idx])
+                    continue
+                total_w = sum(max(1, int(b.get("count", 1))) for b in cluster)
+                lat = sum(float(b["centroid_lat"]) * max(1, int(b.get("count", 1))) for b in cluster) / total_w
+                lon = sum(float(b["centroid_lon"]) * max(1, int(b.get("count", 1))) for b in cluster) / total_w
+                new_centers.append((lat, lon))
+            if new_centers == centers:
+                break
+            centers = new_centers
+
+        final_assignments = [[] for _ in centers]
+        for bucket, pt in zip(buckets, points):
+            best_i = min(range(len(centers)), key=lambda i: self._gps_distance_sq(pt, centers[i]))
+            final_assignments[best_i].append(bucket)
+
+        return [cluster for cluster in final_assignments if cluster]
+
+    def _select_composite_heroes(self, media_list: list[dict[str, Any]], max_images: int = 16) -> list[dict[str, Any]]:
+        if not media_list:
+            return []
+
+        gps_items = [item for item in media_list if self.has_valid_gps(item)]
+        non_gps_items = [item for item in media_list if not self.has_valid_gps(item)]
+
+        selected: list[dict[str, Any]] = []
+        selected_sha1s: set[str] = set()
+
+        non_gps_slots = 1 if non_gps_items else 0
+        gps_slots = max(0, max_images - non_gps_slots)
+
+        if non_gps_slots:
+            non_gps_best = self._choose_representative(non_gps_items)
+            if non_gps_best:
+                selected.append(non_gps_best)
+                selected_sha1s.add(str(non_gps_best["sha1"]))
+
+        # Build GPS buckets
+        bucket_map: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
+        for item in gps_items:
+            bucket_map[self._gps_bucket_key(item)].append(item)
+
+        buckets: list[dict[str, Any]] = []
+        for key, items in bucket_map.items():
+            best_item = self._choose_representative(items)
+            buckets.append({
+                "bucket_key": key,
+                "centroid_lat": sum(float(it.get("latitude") or 0.0) for it in items) / max(1, len(items)),
+                "centroid_lon": sum(float(it.get("longitude") or 0.0) for it in items) / max(1, len(items)),
+                "items": items,
+                "count": len(items),
+                "best_item": best_item,
+            })
+
+        gps_reps: list[dict[str, Any]] = []
+        if gps_slots > 0 and buckets:
+            if len(buckets) <= gps_slots:
+                for bucket in buckets:
+                    rep = bucket.get("best_item")
+                    if rep is not None:
+                        gps_reps.append(rep)
+            else:
+                clusters = self._kmeans_pp_clusters(buckets, gps_slots)
+                for cluster in clusters:
+                    cluster_items: list[dict[str, Any]] = []
+                    for bucket in cluster:
+                        cluster_items.extend(bucket["items"])
+                    rep = self._choose_representative(cluster_items)
+                    if rep is not None:
+                        gps_reps.append(rep)
+
+        # Prefer top GPS representatives by hero score
+        gps_reps = sorted(
+            gps_reps,
+            key=lambda item: (self.get_hero_score(item), str(item.get("final_dt") or "")),
+            reverse=True,
+        )
+
+        for rep in gps_reps:
+            sha1 = str(rep["sha1"])
+            if sha1 not in selected_sha1s and len(selected) < max_images:
+                selected.append(rep)
+                selected_sha1s.add(sha1)
+
+        # Fill remaining slots with next-best hero items, avoiding duplicates.
+        if len(selected) < max_images:
+            remaining = sorted(
+                media_list,
+                key=lambda item: (self.get_hero_score(item), str(item.get("final_dt") or "")),
+                reverse=True,
+            )
+            for item in remaining:
+                sha1 = str(item["sha1"])
+                if sha1 in selected_sha1s:
+                    continue
+                selected.append(item)
+                selected_sha1s.add(sha1)
+                if len(selected) >= max_images:
+                    break
+
+        return selected[:max_images]
+
     def get_composite_hash(self, path_key: str, media_list: list[dict[str, Any]]) -> str | None:
         if not media_list:
             return None
 
+        candidate_hash = self._candidate_hash(media_list)
+        selection_version = self._selection_version()
+
         with sqlite3.connect(self.config.db_path) as conn:
+            conn.row_factory = sqlite3.Row
             cached = conn.execute(
-                "SELECT composite_hash FROM composite_cache WHERE path_key=?",
+                "SELECT composite_hash, candidate_hash, selection_version FROM composite_cache WHERE path_key=?",
                 (path_key,),
             ).fetchone()
             if cached:
-                candidate = self.config.composite_dir / f"{cached[0]}.jpg"
-                if candidate.exists():
-                    return str(cached[0])
+                composite_hash = str(cached["composite_hash"])
+                cached_candidate_hash = str(cached["candidate_hash"] or "")
+                cached_selection_version = str(cached["selection_version"] or "")
+                candidate = self.config.composite_dir / f"{composite_hash}.jpg"
+                if (
+                    candidate.exists()
+                    and cached_candidate_hash == candidate_hash
+                    and cached_selection_version == selection_version
+                ):
+                    return composite_hash
 
-        heroes = media_list[:16]
+        heroes = self._select_composite_heroes(media_list, max_images=16)
+        if not heroes:
+            heroes = media_list[:16]
+
         sha1s = [str(hero["sha1"]) for hero in heroes]
-        composite_hash = hashlib.md5("".join(sha1s).encode("utf-8")).hexdigest()
+        composite_hash = hashlib.md5(("|".join(sha1s) + "|" + selection_version).encode("utf-8")).hexdigest()
         composite_path = self.config.composite_dir / f"{composite_hash}.jpg"
 
         if not composite_path.exists():
             canvas = Image.new("RGB", (400, 400), (13, 13, 13))
-            for idx, hero in enumerate(heroes):
+            for idx, hero in enumerate(heroes[:16]):
                 thumb_path = self.config.thumb_dir / f"{hero['sha1']}.jpg"
                 media_path = self.config.archive_root / str(hero["rel_fqn"])
                 source_path = thumb_path if thumb_path.exists() else media_path
@@ -1619,8 +1847,8 @@ class ArchiveStore:
 
         with sqlite3.connect(self.config.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO composite_cache (path_key, sha1_list, composite_hash) VALUES (?, ?, ?)",
-                (path_key, ",".join(sha1s), composite_hash),
+                "INSERT OR REPLACE INTO composite_cache (path_key, sha1_list, composite_hash, candidate_hash, selection_version) VALUES (?, ?, ?, ?, ?)",
+                (path_key, ",".join(sha1s), composite_hash, candidate_hash, selection_version),
             )
             conn.commit()
 
