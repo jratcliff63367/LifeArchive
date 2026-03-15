@@ -1422,6 +1422,7 @@ class ArchiveConfig:
     aesthetic_db_path: Path
     semantic_db_path: Path
     ai_summary_db_path: Path
+    hero_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
 
@@ -1431,6 +1432,7 @@ class ArchiveStore:
         self.db_cache: list[dict[str, Any]] = []
         self.undated_cache: list[dict[str, Any]] = []
         self.global_tags: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.hero_score_map: dict[str, float] = {}
         self.config.composite_dir.mkdir(parents=True, exist_ok=True)
 
     def is_excluded_tag(self, tag: str) -> bool:
@@ -1448,6 +1450,30 @@ class ArchiveStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_media_dt ON media(final_dt)")
 
+
+    def load_hero_score_map(self) -> None:
+        self.hero_score_map = {}
+        if not self.config.hero_db_path.exists():
+            return
+        try:
+            with sqlite3.connect(self.config.hero_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute("SELECT sha1, hero_score FROM hero_scores").fetchall()
+            self.hero_score_map = {str(r["sha1"]): float(r["hero_score"] or 0.0) for r in rows}
+        except Exception:
+            self.hero_score_map = {}
+
+    def choose_best_interesting_item(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not items:
+            return None
+        def sort_key(item: dict[str, Any]):
+            return (
+                float(self.hero_score_map.get(str(item.get("sha1")), -1.0)),
+                str(item.get("final_dt") or ""),
+            )
+        best = max(items, key=sort_key)
+        return best
+
     def load_cache(self) -> None:
         if not self.config.db_path.exists():
             self.db_cache = []
@@ -1456,6 +1482,7 @@ class ArchiveStore:
             return
 
         self.init_db_extensions()
+        self.load_hero_score_map()
 
         with sqlite3.connect(self.config.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -1528,11 +1555,12 @@ class ArchiveStore:
                 day_items = sorted(day_buckets.get(day, []), key=lambda x: x.get('final_dt', ''))
                 if day_items:
                     top_tags = self.get_top_tags(day_items, limit=3)
+                    best_item = self.choose_best_interesting_item(day_items) or day_items[0]
                     row.append({
                         'day': day,
                         'has_items': True,
                         'url': f'/timeline/month/{year}/{month}/day/{day:02d}',
-                        'thumb_sha1': day_items[0]['sha1'],
+                        'thumb_sha1': best_item['sha1'],
                         'count': len(day_items),
                         'tags': top_tags,
                         'location_label': self.get_day_location_label(day_items),
@@ -1839,6 +1867,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         aesthetic_db_path=root / "aesthetic_scores.sqlite",
         semantic_db_path=root / "semantic_scores.sqlite",
         ai_summary_db_path=root / "ai_summaries.sqlite",
+        hero_db_path=root / "hero_scores.sqlite",
         theme_color=theme_color,
     )
 
