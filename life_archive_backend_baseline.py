@@ -1075,7 +1075,6 @@ HTML_TEMPLATE = r"""
 
                 const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
                 if (showAiSummaryCb) {
-                    showAiSummaryCb.checked = false;
                     showAiSummaryCb.onchange = () => updateAiSummaryOverlay();
                 }
 
@@ -1102,8 +1101,7 @@ HTML_TEMPLATE = r"""
                 renderFaceBoxes([]);
                 clearFaceOverlay();
                 const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
-                if (showAiSummaryCb) showAiSummaryCb.checked = false;
-                updateAiSummaryOverlay();
+                    updateAiSummaryOverlay();
                 const rawEl = document.getElementById('lb-raw');
                 if (rawEl) rawEl.textContent = String(err);
                 buildMetaTabs(['overview', 'raw']);
@@ -1154,7 +1152,6 @@ HTML_TEMPLATE = r"""
             document.getElementById('lb-sidebar').classList.remove('visible');
             clearFaceOverlay();
             const showAiSummaryCb = document.getElementById('lb-show-ai-summary');
-            if (showAiSummaryCb) showAiSummaryCb.checked = false;
             currentMeta = null;
             updateAiSummaryOverlay();
         }
