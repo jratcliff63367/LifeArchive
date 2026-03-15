@@ -1613,7 +1613,7 @@ class ArchiveStore:
         return hashlib.md5(sig.encode("utf-8")).hexdigest()
 
     def _selection_version(self) -> str:
-        return f"geohero_v1|hero_mtime={int(self.hero_db_mtime)}"
+        return f"geohero_v2_timecluster|hero_mtime={int(self.hero_db_mtime)}"
 
     def _choose_representative(self, items: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not items:
@@ -1705,12 +1705,103 @@ class ArchiveStore:
 
         return [cluster for cluster in final_assignments if cluster]
 
+
+    @staticmethod
+    def _parse_final_dt(item: dict[str, Any]) -> datetime | None:
+        try:
+            dt_str = str(item.get("final_dt") or "")
+            if not dt_str or dt_str.startswith("0000"):
+                return None
+            return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+
+    def _cluster_items_by_time(self, items: list[dict[str, Any]], threshold_seconds: int = 15) -> list[list[dict[str, Any]]]:
+        if not items:
+            return []
+        decorated = []
+        for item in items:
+            dt = self._parse_final_dt(item)
+            if dt is None:
+                # Put undated/invalid items into their own singleton cluster.
+                decorated.append((None, item))
+            else:
+                decorated.append((dt, item))
+
+        # Sort valid timestamps first, then invalids at end as singletons.
+        valid = sorted([(dt, item) for dt, item in decorated if dt is not None], key=lambda pair: pair[0])
+        invalid = [item for dt, item in decorated if dt is None]
+
+        clusters: list[list[dict[str, Any]]] = []
+        if valid:
+            current: list[dict[str, Any]] = [valid[0][1]]
+            prev_dt = valid[0][0]
+            for dt, item in valid[1:]:
+                delta = (dt - prev_dt).total_seconds()
+                if delta <= threshold_seconds:
+                    current.append(item)
+                else:
+                    clusters.append(current)
+                    current = [item]
+                prev_dt = dt
+            if current:
+                clusters.append(current)
+
+        for item in invalid:
+            clusters.append([item])
+
+        return clusters
+
+    def _reduce_candidates_by_time_clusters(self, media_list: list[dict[str, Any]], threshold_seconds: int = 15) -> list[dict[str, Any]]:
+        if not media_list:
+            return []
+
+        gps_bucket_map: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
+        non_gps_items: list[dict[str, Any]] = []
+
+        for item in media_list:
+            if self.has_valid_gps(item):
+                gps_bucket_map[self._gps_bucket_key(item)].append(item)
+            else:
+                non_gps_items.append(item)
+
+        reduced: list[dict[str, Any]] = []
+
+        # GPS items: cluster within each place by time adjacency, then keep best representative.
+        for _, bucket_items in gps_bucket_map.items():
+            time_clusters = self._cluster_items_by_time(bucket_items, threshold_seconds=threshold_seconds)
+            for cluster in time_clusters:
+                rep = self._choose_representative(cluster)
+                if rep is not None:
+                    reduced.append(rep)
+
+        # Non-GPS items: leave as-is for now. They may still represent important legacy material.
+        reduced.extend(non_gps_items)
+
+        # De-duplicate by sha1 just in case.
+        seen: set[str] = set()
+        unique_reduced: list[dict[str, Any]] = []
+        for item in reduced:
+            sha1 = str(item.get("sha1") or "")
+            if not sha1 or sha1 in seen:
+                continue
+            seen.add(sha1)
+            unique_reduced.append(item)
+
+        return unique_reduced
+
     def _select_composite_heroes(self, media_list: list[dict[str, Any]], max_images: int = 16) -> list[dict[str, Any]]:
         if not media_list:
             return []
 
-        gps_items = [item for item in media_list if self.has_valid_gps(item)]
-        non_gps_items = [item for item in media_list if not self.has_valid_gps(item)]
+        # Step 1: reduce burst/near-duplicate groups first, within each GPS location bucket,
+        # by clustering images taken within a short time window.
+        reduced_candidates = self._reduce_candidates_by_time_clusters(media_list, threshold_seconds=15)
+        if not reduced_candidates:
+            reduced_candidates = list(media_list)
+
+        gps_items = [item for item in reduced_candidates if self.has_valid_gps(item)]
+        non_gps_items = [item for item in reduced_candidates if not self.has_valid_gps(item)]
 
         selected: list[dict[str, Any]] = []
         selected_sha1s: set[str] = set()
@@ -1718,13 +1809,14 @@ class ArchiveStore:
         non_gps_slots = 1 if non_gps_items else 0
         gps_slots = max(0, max_images - non_gps_slots)
 
+        # Reserve one slot for non-GPS material if present.
         if non_gps_slots:
             non_gps_best = self._choose_representative(non_gps_items)
             if non_gps_best:
                 selected.append(non_gps_best)
                 selected_sha1s.add(str(non_gps_best["sha1"]))
 
-        # Build GPS buckets
+        # Step 2: build GPS buckets from the reduced representative set only.
         bucket_map: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
         for item in gps_items:
             bucket_map[self._gps_bucket_key(item)].append(item)
@@ -1741,14 +1833,18 @@ class ArchiveStore:
                 "best_item": best_item,
             })
 
+        # Step 3: geographic diversity selection.
         gps_reps: list[dict[str, Any]] = []
         if gps_slots > 0 and buckets:
             if len(buckets) <= gps_slots:
+                # Few unique locations: take the best rep from each bucket,
+                # then filler later can add additional reduced representatives.
                 for bucket in buckets:
                     rep = bucket.get("best_item")
                     if rep is not None:
                         gps_reps.append(rep)
             else:
+                # Many unique locations: cluster bucket centroids into gps_slots regions.
                 clusters = self._kmeans_pp_clusters(buckets, gps_slots)
                 for cluster in clusters:
                     cluster_items: list[dict[str, Any]] = []
@@ -1758,7 +1854,6 @@ class ArchiveStore:
                     if rep is not None:
                         gps_reps.append(rep)
 
-        # Prefer top GPS representatives by hero score
         gps_reps = sorted(
             gps_reps,
             key=lambda item: (self.get_hero_score(item), str(item.get("final_dt") or "")),
@@ -1771,10 +1866,12 @@ class ArchiveStore:
                 selected.append(rep)
                 selected_sha1s.add(sha1)
 
-        # Fill remaining slots with next-best hero items, avoiding duplicates.
+        # Step 4: fill remaining slots ONLY from the reduced representative pool,
+        # not the raw original media list. This prevents the filler phase from
+        # reintroducing burst duplicates that the clustering step removed.
         if len(selected) < max_images:
             remaining = sorted(
-                media_list,
+                reduced_candidates,
                 key=lambda item: (self.get_hero_score(item), str(item.get("final_dt") or "")),
                 reverse=True,
             )
@@ -1789,30 +1886,77 @@ class ArchiveStore:
 
         return selected[:max_images]
 
-    def get_composite_hash(self, path_key: str, media_list: list[dict[str, Any]]) -> str | None:
+
+    def get_composite_payload(self, path_key: str, media_list: list[dict[str, Any]], max_images: int = 16) -> tuple[str | None, list[dict[str, Any]]]:
         if not media_list:
-            return None
+            return None, []
 
         candidate_hash = self._candidate_hash(media_list)
         selection_version = self._selection_version()
+        heroes = self._select_composite_heroes(media_list, max_images=max_images)
+        if not heroes:
+            heroes = media_list[:max_images]
 
+        sha1s = [str(hero["sha1"]) for hero in heroes]
+        composite_hash = hashlib.md5(("|".join(sha1s) + "|" + selection_version).encode("utf-8")).hexdigest()
+        composite_path = self.config.composite_dir / f"{composite_hash}.jpg"
+
+        # Reuse cached composite file if all cache keys still match and file exists.
         with sqlite3.connect(self.config.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cached = conn.execute(
-                "SELECT composite_hash, candidate_hash, selection_version FROM composite_cache WHERE path_key=?",
+                "SELECT composite_hash, candidate_hash, selection_version, sha1_list FROM composite_cache WHERE path_key=?",
                 (path_key,),
             ).fetchone()
             if cached:
-                composite_hash = str(cached["composite_hash"])
+                cached_hash = str(cached["composite_hash"] or "")
                 cached_candidate_hash = str(cached["candidate_hash"] or "")
                 cached_selection_version = str(cached["selection_version"] or "")
-                candidate = self.config.composite_dir / f"{composite_hash}.jpg"
+                cached_sha1s = str(cached["sha1_list"] or "")
+                candidate = self.config.composite_dir / f"{cached_hash}.jpg"
                 if (
                     candidate.exists()
                     and cached_candidate_hash == candidate_hash
                     and cached_selection_version == selection_version
+                    and cached_sha1s == ",".join(sha1s)
                 ):
-                    return composite_hash
+                    return cached_hash, heroes
+
+        if not composite_path.exists():
+            canvas = Image.new("RGB", (400, 400), (13, 13, 13))
+            for idx, hero in enumerate(heroes[:max_images]):
+                thumb_path = self.config.thumb_dir / f"{hero['sha1']}.jpg"
+                media_path = self.config.archive_root / str(hero["rel_fqn"])
+                source_path = thumb_path if thumb_path.exists() else media_path
+
+                if not source_path.exists():
+                    continue
+
+                try:
+                    with Image.open(source_path) as img:
+                        img = ImageOps.exif_transpose(img)
+                        img.thumbnail((100, 100))
+                        width, height = img.size
+                        x = (idx % 4) * 100 + (100 - width) // 2
+                        y = (idx // 4) * 100 + (100 - height) // 2
+                        canvas.paste(img, (x, y))
+                except Exception:
+                    continue
+
+            canvas.save(composite_path, "JPEG", quality=85)
+
+        with sqlite3.connect(self.config.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO composite_cache (path_key, sha1_list, composite_hash, candidate_hash, selection_version) VALUES (?, ?, ?, ?, ?)",
+                (path_key, ",".join(sha1s), composite_hash, candidate_hash, selection_version),
+            )
+            conn.commit()
+
+        return composite_hash, heroes
+
+    def get_composite_hash(self, path_key: str, media_list: list[dict[str, Any]]) -> str | None:
+        composite_hash, _heroes = self.get_composite_payload(path_key, media_list, max_images=16)
+        return composite_hash
 
         heroes = self._select_composite_heroes(media_list, max_images=16)
         if not heroes:
@@ -2595,9 +2739,9 @@ def create_app(config: ArchiveConfig) -> Flask:
             )
 
         for card in cards:
-            card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-        manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
         return render_page(
             page_title="Timeline",
             active_tab="timeline",
@@ -2627,9 +2771,9 @@ def create_app(config: ArchiveConfig) -> Flask:
             )
 
         for card in cards:
-            card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-        manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
         return render_page(
             page_title=f"The {decade}",
             active_tab="timeline",
@@ -2662,9 +2806,9 @@ def create_app(config: ArchiveConfig) -> Flask:
             )
 
         for card in cards:
-            card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-        manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
         return render_page(
             page_title=year,
             active_tab="timeline",
@@ -2744,9 +2888,9 @@ def create_app(config: ArchiveConfig) -> Flask:
             )
 
         for card in cards:
-            card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-        manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
         return render_page(
             page_title="Undated Archive",
             active_tab="undated",
@@ -2807,9 +2951,9 @@ def create_app(config: ArchiveConfig) -> Flask:
             )
 
         for card in cards:
-            card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-        manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
         manifests["main_gallery"] = store.build_manifest(direct_files)
 
         crumb = "Root" if not subpath else f"<a href='/folder'>Root</a> / {subpath.replace('/', ' / ')}"
