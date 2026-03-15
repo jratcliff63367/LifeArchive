@@ -605,6 +605,8 @@ HTML_TEMPLATE = r"""
             gap: 8px 12px;
             align-items: start;
             font-size: 0.88em;
+            user-select: text;
+            -webkit-user-select: text;
         }
         .lb-k {
             color: #8d8d8d;
@@ -612,10 +614,14 @@ HTML_TEMPLATE = r"""
             text-transform: uppercase;
             letter-spacing: 0.04em;
             font-size: 0.78em;
+            user-select: text;
+            -webkit-user-select: text;
         }
         .lb-v {
             color: #fff;
             word-break: break-word;
+            user-select: text;
+            -webkit-user-select: text;
         }
         .lb-empty {
             color: #777;
@@ -993,6 +999,11 @@ HTML_TEMPLATE = r"""
                     ['Date', overview.final_dt || ''],
                     ['Date Source', overview.dt_source || ''],
                     ['Dimensions', overview.dimensions || ''],
+                    ['Latitude', overview.latitude || ''],
+                    ['Longitude', overview.longitude || ''],
+                    ['Altitude (m)', overview.altitude_meters || ''],
+                    ['Has Valid GPS', overview.has_valid_gps || ''],
+                    ['Extension', overview.file_extension || ''],
                     ['Tags', overview.tags || ''],
                     ['Deleted', String(overview.is_deleted ?? '')],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
