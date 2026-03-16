@@ -2,7 +2,11 @@
 """
 Life Archive ingestor / in-place media table rebuild.
 
-Normal Life Archive ingestor. JPEG-only ingestion with GPS EXIF parsing fixed via explicit GPS IFD decoding.
+Normal Life Archive ingestor:
+- JPEG only (.jpg / .jpeg)
+- explicit SOURCE_DIRECTORIES list
+- GPS EXIF parsing fixed via explicit GPS IFD decoding
+- stages files under ARCHIVE_ROOT before writing media rows
 """
 
 from __future__ import annotations
@@ -23,6 +27,13 @@ from PIL import ExifTags, Image, ImageOps
 # ============================================================================
 
 ARCHIVE_ROOT = Path(r"C:\website-photos")
+
+# Explicit source roots to scan. These may be outside ARCHIVE_ROOT.
+SOURCE_DIRECTORIES = [
+    Path(r"C:\Photos from 2025"),
+    # Path(r"C:\Photos from 2024"),
+]
+
 DB_PATH = ARCHIVE_ROOT / "archive_index.db"
 THUMB_DIR = ARCHIVE_ROOT / "_thumbs"
 
@@ -57,12 +68,15 @@ TAGS = ExifTags.TAGS
 GPSTAGS = ExifTags.GPSTAGS
 DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Pillow versions vary; ExifTags.IFD may not exist in very old versions.
 GPS_IFD_ENUM = getattr(getattr(ExifTags, "IFD", object()), "GPSInfo", 34853)
 
 IMG_RE = re.compile(r"(?:IMG|PXL)[_-](?P<date>\d{8})[_-](?P<time>\d{6})", re.IGNORECASE)
 PIXEL_RE = re.compile(r"(?:^|[_-])(?P<date>\d{8})[_-](?P<time>\d{6})")
 
+
+# ============================================================================
+# DATA STRUCTURES
+# ============================================================================
 
 @dataclass
 class ParsedMedia:
@@ -82,6 +96,10 @@ class ParsedMedia:
     file_size: int
     mtime_utc: str
 
+
+# ============================================================================
+# HELPERS
+# ============================================================================
 
 def utc_now_str() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -106,17 +124,56 @@ def is_allowed_media_file(path: Path) -> bool:
     return path.is_file() and file_extension(path) in ALLOWED_EXTENSIONS
 
 
-def iter_archive_files(root: Path) -> Iterable[Path]:
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
-        for filename in filenames:
-            p = Path(dirpath) / filename
-            if is_allowed_media_file(p):
-                yield p
+def iter_archive_files(source_dirs: Iterable[Path]) -> Iterable[tuple[Path, Path]]:
+    seen: set[Path] = set()
+    for root in source_dirs:
+        root = Path(root)
+        if not root.exists():
+            print(f"[WARN] Source directory does not exist, skipping: {root}")
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
+            for filename in filenames:
+                p = Path(dirpath) / filename
+                if p in seen:
+                    continue
+                if is_allowed_media_file(p):
+                    seen.add(p)
+                    yield root, p
 
 
 def rel_fqn_for(path: Path, root: Path) -> str:
     return str(path.relative_to(root)).replace("/", "\\")
+
+
+def archive_dest_for(source_path: Path, source_root: Path, archive_root: Path) -> Path:
+    """
+    Map an arbitrary source file into the archive tree.
+
+    Example:
+        source_root = C:\Photos from 2025
+        source_path = C:\Photos from 2025\foo\bar.jpg
+        archive_root = C:\website-photos
+    becomes:
+        C:\website-photos\Photos from 2025\foo\bar.jpg
+    """
+    relative_inside_source = source_path.relative_to(source_root)
+    top_level = source_root.name
+    return archive_root / top_level / relative_inside_source
+
+
+def ensure_archived_copy(source_path: Path, source_root: Path, archive_root: Path) -> Path:
+    """
+    Ensure the source JPEG exists under ARCHIVE_ROOT, because the rest of the
+    system expects media.rel_fqn to resolve under that tree.
+    """
+    dest_path = archive_dest_for(source_path, source_root, archive_root)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not dest_path.exists():
+        dest_path.write_bytes(source_path.read_bytes())
+
+    return dest_path
 
 
 def is_deleted_rel(rel_fqn: str) -> int:
@@ -191,20 +248,15 @@ def exif_to_named_dict(exif: Any) -> dict[str, Any]:
 
 
 def decode_gps_ifd(exif: Any) -> tuple[dict[str, Any], float | None, float | None, float | None]:
-    """
-    Explicitly decode the GPS IFD. This is the important fix.
-    """
     gps_named: dict[str, Any] = {}
     lat = lon = alt = None
 
-    # Preferred route on newer Pillow
     gps_ifd = None
     try:
         gps_ifd = exif.get_ifd(GPS_IFD_ENUM)
     except Exception:
         gps_ifd = None
 
-    # Fallback route: raw GPSInfo entry
     if not gps_ifd:
         try:
             raw = exif.get(34853)
@@ -222,7 +274,6 @@ def decode_gps_ifd(exif: Any) -> tuple[dict[str, Any], float | None, float | Non
         alt = maybe_float(gps_named.get("GPSAltitude"))
 
         alt_ref = gps_named.get("GPSAltitudeRef")
-        alt_ref_num = None
         try:
             alt_ref_num = int(alt_ref) if alt_ref is not None else None
         except Exception:
@@ -278,7 +329,6 @@ def parse_exif_metadata(path: Path) -> dict[str, Any]:
         named = exif_to_named_dict(exif)
         result["raw_exif_keys"] = sorted(str(k) for k in named.keys())
 
-        # Date/time preference order
         for key_name, source_name in (
             ("DateTimeOriginal", "EXIF DateTimeOriginal"),
             ("DateTimeDigitized", "EXIF DateTimeDigitized"),
@@ -313,31 +363,6 @@ def parse_exif_metadata(path: Path) -> dict[str, Any]:
         result["dt_source"] = dt_source
 
     return result
-
-
-def parsed_media_for(path: Path, root: Path) -> ParsedMedia:
-    rel_fqn = rel_fqn_for(path, root)
-    meta = parse_exif_metadata(path)
-    sha1 = file_sha1(path)
-    stat = path.stat()
-
-    return ParsedMedia(
-        sha1=sha1,
-        rel_fqn=rel_fqn,
-        original_filename=path.name,
-        final_dt=meta["final_dt"],
-        dt_source=meta["dt_source"],
-        width=int(meta["width"] or 0),
-        height=int(meta["height"] or 0),
-        latitude=meta["latitude"],
-        longitude=meta["longitude"],
-        altitude_meters=meta["altitude_meters"],
-        path_tags=path_tags_for(rel_fqn),
-        is_deleted=is_deleted_rel(rel_fqn),
-        extension=file_extension(path).upper().lstrip("."),
-        file_size=int(stat.st_size),
-        mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
-    )
 
 
 def ensure_thumb(parsed: ParsedMedia, source_path: Path) -> None:
@@ -463,14 +488,6 @@ def inspect_file(path_str: str) -> int:
     parsed = parse_exif_metadata(path)
     for k, v in parsed.items():
         print(f"{k}: {v}")
-
-    root_for_rel = ARCHIVE_ROOT if str(path).startswith(str(ARCHIVE_ROOT)) else path.parent
-    pm = parsed_media_for(path, root_for_rel)
-
-    print("-" * 90)
-    print("Normalized media row preview:")
-    for field_name, field_value in pm.__dict__.items():
-        print(f"{field_name}: {field_value}")
     return 0
 
 
@@ -479,17 +496,24 @@ def rebuild_ingest() -> int:
         print(f"[ERROR] ARCHIVE_ROOT not found: {ARCHIVE_ROOT}")
         return 1
 
-    files = list(iter_archive_files(ARCHIVE_ROOT))
+    files = list(iter_archive_files(SOURCE_DIRECTORIES))
     skipped_non_jpeg = 0
 
-    for dirpath, dirnames, filenames in os.walk(ARCHIVE_ROOT):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
-        for filename in filenames:
-            p = Path(dirpath) / filename
-            if p.is_file() and file_extension(p) not in ALLOWED_EXTENSIONS:
-                skipped_non_jpeg += 1
+    for source_root in SOURCE_DIRECTORIES:
+        source_root = Path(source_root)
+        if not source_root.exists():
+            continue
+        for dirpath, dirnames, filenames in os.walk(source_root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
+            for filename in filenames:
+                p = Path(dirpath) / filename
+                if p.is_file() and file_extension(p) not in ALLOWED_EXTENSIONS:
+                    skipped_non_jpeg += 1
 
     print(f"Archive root: {ARCHIVE_ROOT}")
+    print("Source directories:")
+    for source_root in SOURCE_DIRECTORIES:
+        print(f"  - {source_root}")
     print(f"JPEG files to ingest: {len(files)}")
     print(f"Non-JPEG files skipped: {skipped_non_jpeg}")
     print(f"Started: {utc_now_str()}")
@@ -501,9 +525,10 @@ def rebuild_ingest() -> int:
     filename_time_count = 0
     fs_time_count = 0
 
-    for idx, path in enumerate(files, start=1):
+    for idx, (source_root, source_path) in enumerate(files, start=1):
         try:
-            meta = parse_exif_metadata(path)
+            archived_path = ensure_archived_copy(source_path, source_root, ARCHIVE_ROOT)
+            meta = parse_exif_metadata(archived_path)
 
             if meta.get("latitude") is not None and meta.get("longitude") is not None:
                 exif_gps_count += 1
@@ -518,10 +543,12 @@ def rebuild_ingest() -> int:
             else:
                 fs_time_count += 1
 
+            archived_rel = rel_fqn_for(archived_path, ARCHIVE_ROOT)
+            stat = archived_path.stat()
             parsed = ParsedMedia(
-                sha1=file_sha1(path),
-                rel_fqn=rel_fqn_for(path, ARCHIVE_ROOT),
-                original_filename=path.name,
+                sha1=file_sha1(archived_path),
+                rel_fqn=archived_rel,
+                original_filename=archived_path.name,
                 final_dt=str(meta.get("final_dt") or ""),
                 dt_source=dt_source,
                 width=int(meta.get("width") or 0),
@@ -529,19 +556,19 @@ def rebuild_ingest() -> int:
                 latitude=meta.get("latitude"),
                 longitude=meta.get("longitude"),
                 altitude_meters=meta.get("altitude_meters"),
-                path_tags=path_tags_for(rel_fqn_for(path, ARCHIVE_ROOT)),
-                is_deleted=is_deleted_rel(rel_fqn_for(path, ARCHIVE_ROOT)),
-                extension=file_extension(path).upper().lstrip("."),
-                file_size=int(path.stat().st_size),
-                mtime_utc=datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
+                path_tags=path_tags_for(archived_rel),
+                is_deleted=is_deleted_rel(archived_rel),
+                extension=file_extension(archived_path).upper().lstrip("."),
+                file_size=int(stat.st_size),
+                mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
             )
             rows.append(parsed)
-            ensure_thumb(parsed, path)
+            ensure_thumb(parsed, archived_path)
 
             if idx % 500 == 0:
                 print(f"[Progress] {idx}/{len(files)}")
         except Exception as exc:
-            print(f"[WARN] Failed to ingest {path}: {exc}")
+            print(f"[WARN] Failed to ingest {source_path}: {exc}")
 
     print(f"Rows parsed: {len(rows)}")
     print(f"Images with GPS: {exif_gps_count}")
