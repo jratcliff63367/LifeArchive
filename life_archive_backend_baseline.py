@@ -2057,6 +2057,19 @@ class ArchiveStore:
             except Exception:
                 dimensions = ""
 
+            lat_val = media_row.get("latitude")
+            lon_val = media_row.get("longitude")
+            alt_val = media_row.get("altitude_meters")
+            file_size_val = media_row.get("file_size")
+            ext_val = media_row.get("extension") or ""
+            try:
+                has_valid_gps = (
+                    lat_val is not None and lon_val is not None and
+                    (abs(float(lat_val)) > 0.000001 or abs(float(lon_val)) > 0.000001)
+                )
+            except Exception:
+                has_valid_gps = False
+
             result["overview"] = {
                 "sha1": sha1,
                 "original_filename": media_row.get("original_filename") or "",
@@ -2069,6 +2082,12 @@ class ArchiveStore:
                 "custom_notes": media_row.get("custom_notes") or "",
                 "is_deleted": media_row.get("is_deleted"),
                 "dimensions": dimensions,
+                "latitude": "" if lat_val is None else str(lat_val),
+                "longitude": "" if lon_val is None else str(lon_val),
+                "altitude_meters": "" if alt_val is None else str(alt_val),
+                "has_valid_gps": "Yes" if has_valid_gps else "No",
+                "file_extension": str(ext_val),
+                "file_size": "" if file_size_val is None else str(file_size_val),
             }
 
         if self.config.technical_db_path.exists():

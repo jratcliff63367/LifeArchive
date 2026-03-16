@@ -1,496 +1,571 @@
-import os
-import sqlite3
+#!/usr/bin/env python3
+"""
+Life Archive ingestor / in-place media table rebuild.
+
+Normal Life Archive ingestor. JPEG-only ingestion with GPS EXIF parsing fixed via explicit GPS IFD decoding.
+"""
+
+from __future__ import annotations
+
 import hashlib
-import time
-import shutil
-import json
+import os
 import re
+import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image, ExifTags, ImageOps
+from typing import Any, Iterable
 
-# ------------------------------------------------------------
-# CONFIGURATION
-# ------------------------------------------------------------
+from PIL import ExifTags, Image, ImageOps
 
-SOURCES = [
-r"C:\Photos from 2025",
+# ============================================================================
+# CONFIG
+# ============================================================================
 
-]
+ARCHIVE_ROOT = Path(r"C:\website-photos")
+DB_PATH = ARCHIVE_ROOT / "archive_index.db"
+THUMB_DIR = ARCHIVE_ROOT / "_thumbs"
 
-DEST_ROOT = r"C:\website-photos"
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg"}
 
-DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
-THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
-
-MIN_WIDTH = 500
-MIN_HEIGHT = 300
-
-PROGRESS_INTERVAL = 10
-COMMIT_INTERVAL = 100
-
-MIN_VALID_YEAR = 1950
-MAX_VALID_YEAR = 2026
-
-# ------------------------------------------------------------
-# UTILITY FUNCTIONS
-# ------------------------------------------------------------
-
-EXIF_TAG_NAME_BY_ID = ExifTags.TAGS
-EXIF_DATETIME_TAGS = {
-    "DateTimeOriginal",
-    "DateTimeDigitized",
-    "DateTime",
+SKIP_DIR_NAMES = {
+    "_thumbs",
+    "_web_layout",
+    "__pycache__",
+    ".git",
+    ".github",
 }
-XMP_DATE_PATTERNS = [
-    r'(?:xmp:CreateDate|photoshop:DateCreated|xmp:ModifyDate|exif:DateTimeOriginal)\s*=\s*"([^"]+)"',
-    r'<(?:xmp:CreateDate|photoshop:DateCreated|xmp:ModifyDate|exif:DateTimeOriginal)>([^<]+)</',
-]
-FILENAME_DATE_PATTERNS = [
-    # PXL_20250331_194558354.jpg
-    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})(?!\d)'),
-    # IMG_2025-03-31_19-45-58
-    re.compile(r'(?<!\d)(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})(?!\d)'),
-    # 20250331_194558
-    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})(?!\d)'),
-]
 
-def compute_sha1(path: str) -> str:
-    sha1 = hashlib.sha1()
-    with open(path, "rb") as f:
+DELETED_PREFIXES = ("_trash/", "_stash/")
+
+THUMB_MAX_DIM = 640
+THUMB_QUALITY = 85
+WRITE_THUMBS = True
+
+# Set this to a real file to test parsing on one image only.
+INSPECT_FILE = ""
+
+REBUILD_MEDIA_TABLE = True
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+Image.MAX_IMAGE_PIXELS = None
+
+TAGS = ExifTags.TAGS
+GPSTAGS = ExifTags.GPSTAGS
+DT_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# Pillow versions vary; ExifTags.IFD may not exist in very old versions.
+GPS_IFD_ENUM = getattr(getattr(ExifTags, "IFD", object()), "GPSInfo", 34853)
+
+IMG_RE = re.compile(r"(?:IMG|PXL)[_-](?P<date>\d{8})[_-](?P<time>\d{6})", re.IGNORECASE)
+PIXEL_RE = re.compile(r"(?:^|[_-])(?P<date>\d{8})[_-](?P<time>\d{6})")
+
+
+@dataclass
+class ParsedMedia:
+    sha1: str
+    rel_fqn: str
+    original_filename: str
+    final_dt: str
+    dt_source: str
+    width: int
+    height: int
+    latitude: float | None
+    longitude: float | None
+    altitude_meters: float | None
+    path_tags: str
+    is_deleted: int
+    extension: str
+    file_size: int
+    mtime_utc: str
+
+
+def utc_now_str() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def file_sha1(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
         while True:
-            data = f.read(65536)
-            if not data:
+            chunk = f.read(chunk_size)
+            if not chunk:
                 break
-            sha1.update(data)
-    return sha1.hexdigest()
+            h.update(chunk)
+    return h.hexdigest()
 
 
-def safe_datetime_from_timestamp(ts):
-    try:
-        if ts is None or ts <= 0:
-            return None
-        return datetime.fromtimestamp(ts)
-    except (OSError, OverflowError, ValueError):
-        return None
+def file_extension(path: Path) -> str:
+    return path.suffix.lower()
 
 
-def is_valid_dt(dt):
-    return dt is not None and MIN_VALID_YEAR <= dt.year <= MAX_VALID_YEAR
+def is_allowed_media_file(path: Path) -> bool:
+    return path.is_file() and file_extension(path) in ALLOWED_EXTENSIONS
 
 
-def strip_tz(dt: datetime) -> datetime:
-    if dt.tzinfo is not None:
-        return dt.astimezone().replace(tzinfo=None)
-    return dt
+def iter_archive_files(root: Path) -> Iterable[Path]:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
+        for filename in filenames:
+            p = Path(dirpath) / filename
+            if is_allowed_media_file(p):
+                yield p
 
 
-def parse_exif_style_datetime(value: str):
-    if not value:
-        return None
-    value = value.strip().replace("\x00", "")
-    # Common EXIF style
-    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            dt = datetime.strptime(value, fmt)
-            return dt if is_valid_dt(dt) else None
-        except Exception:
-            pass
-    # ISO-like forms
-    value2 = value.replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(value2)
-        dt = strip_tz(dt)
-        return dt if is_valid_dt(dt) else None
-    except Exception:
-        return None
+def rel_fqn_for(path: Path, root: Path) -> str:
+    return str(path.relative_to(root)).replace("/", "\\")
 
 
-def get_pillow_exif_datetimes(path: str):
-    found = []
-    try:
-        with Image.open(path) as img:
-            exif = img.getexif()
-            if exif:
-                for tag_id, value in exif.items():
-                    tag_name = EXIF_TAG_NAME_BY_ID.get(tag_id, tag_id)
-                    if tag_name in EXIF_DATETIME_TAGS and value:
-                        dt = parse_exif_style_datetime(str(value))
-                        if is_valid_dt(dt):
-                            found.append((tag_name, dt))
-    except Exception:
-        pass
-    return found
+def is_deleted_rel(rel_fqn: str) -> int:
+    normalized = rel_fqn.replace("\\", "/").lower()
+    return 1 if normalized.startswith(DELETED_PREFIXES) else 0
 
 
-def extract_xmp_datetimes(path: str):
-    found = []
-    try:
-        with open(path, "rb") as f:
-            data = f.read(512 * 1024)  # enough for APP1/XMP in normal files
-        text = data.decode("utf-8", errors="ignore")
-        for pattern in XMP_DATE_PATTERNS:
-            for match in re.finditer(pattern, text):
-                dt = parse_exif_style_datetime(match.group(1))
-                if is_valid_dt(dt):
-                    found.append(("XMP", dt))
-    except Exception:
-        pass
-    return found
-
-
-def google_takeout_sidecar_candidates(file_path: str):
-    p = Path(file_path)
-    candidates = []
-
-    # Most common: IMG_1234.JPG.json
-    candidates.append(p.with_name(p.name + ".json"))
-
-    # Some workflows may strip extension before .json
-    candidates.append(p.with_suffix(p.suffix + ".json"))
-    candidates.append(p.with_suffix(".json"))
-
-    # Deduplicate while preserving order
-    seen = set()
-    out = []
-    for c in candidates:
-        s = str(c)
-        if s not in seen:
-            out.append(c)
-            seen.add(s)
-    return out
-
-
-def get_google_takeout_datetime(file_path: str):
-    for candidate in google_takeout_sidecar_candidates(file_path):
-        if not candidate.exists():
+def path_tags_for(rel_fqn: str) -> str:
+    parts = [p for p in rel_fqn.replace("\\", "/").split("/")[:-1] if p]
+    tags: list[str] = []
+    for part in parts:
+        low = part.lower()
+        if low in {"_trash", "_stash", "_thumbs", "_web_layout"}:
             continue
+        tags.append(part)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in tags:
+        if t not in seen:
+            ordered.append(t)
+            seen.add(t)
+    return ", ".join(ordered)
+
+
+def maybe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        if hasattr(value, "numerator") and hasattr(value, "denominator"):
+            den = float(value.denominator)
+            if den == 0:
+                return None
+            return float(value.numerator) / den
+        if isinstance(value, tuple) and len(value) == 2:
+            den = float(value[1])
+            if den == 0:
+                return None
+            return float(value[0]) / den
+        return float(value)
+    except Exception:
+        return None
+
+
+def dms_to_deg(values: Any, ref: Any) -> float | None:
+    try:
+        vals = list(values)
+        if len(vals) != 3:
+            return None
+        deg = maybe_float(vals[0])
+        mins = maybe_float(vals[1])
+        secs = maybe_float(vals[2])
+        if deg is None or mins is None or secs is None:
+            return None
+        out = deg + (mins / 60.0) + (secs / 3600.0)
+        ref_s = str(ref).upper()
+        if ref_s in {"S", "W"}:
+            out = -out
+        return out
+    except Exception:
+        return None
+
+
+def exif_to_named_dict(exif: Any) -> dict[str, Any]:
+    named: dict[str, Any] = {}
+    if not exif:
+        return named
+    for key, value in exif.items():
+        name = TAGS.get(key, key)
+        named[name] = value
+    return named
+
+
+def decode_gps_ifd(exif: Any) -> tuple[dict[str, Any], float | None, float | None, float | None]:
+    """
+    Explicitly decode the GPS IFD. This is the important fix.
+    """
+    gps_named: dict[str, Any] = {}
+    lat = lon = alt = None
+
+    # Preferred route on newer Pillow
+    gps_ifd = None
+    try:
+        gps_ifd = exif.get_ifd(GPS_IFD_ENUM)
+    except Exception:
+        gps_ifd = None
+
+    # Fallback route: raw GPSInfo entry
+    if not gps_ifd:
         try:
-            with open(candidate, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            raw = exif.get(34853)
+            if isinstance(raw, dict):
+                gps_ifd = raw
+        except Exception:
+            gps_ifd = None
 
-            # Common Google Photos Takeout schema
-            ts = None
-            if isinstance(data, dict):
-                photo_taken = data.get("photoTakenTime")
-                if isinstance(photo_taken, dict):
-                    ts = photo_taken.get("timestamp")
+    if isinstance(gps_ifd, dict) and gps_ifd:
+        for gk, gv in gps_ifd.items():
+            gps_named[GPSTAGS.get(gk, gk)] = gv
 
-                if ts is None:
-                    creation_time = data.get("creationTime")
-                    if isinstance(creation_time, dict):
-                        ts = creation_time.get("timestamp")
+        lat = dms_to_deg(gps_named.get("GPSLatitude"), gps_named.get("GPSLatitudeRef"))
+        lon = dms_to_deg(gps_named.get("GPSLongitude"), gps_named.get("GPSLongitudeRef"))
+        alt = maybe_float(gps_named.get("GPSAltitude"))
 
-                if ts is None:
-                    # Sometimes timestamp-like values may be present in nested metadata
-                    for key in ("timestamp",):
-                        if key in data and str(data.get(key)).isdigit():
-                            ts = data.get(key)
-                            break
+        alt_ref = gps_named.get("GPSAltitudeRef")
+        alt_ref_num = None
+        try:
+            alt_ref_num = int(alt_ref) if alt_ref is not None else None
+        except Exception:
+            alt_ref_num = 1 if str(alt_ref) == "b'\\x01'" else 0
 
-            if ts is not None:
+        if alt is not None and alt_ref_num == 1:
+            alt = -alt
+
+    return gps_named, lat, lon, alt
+
+
+def dt_from_filename(filename: str) -> tuple[str | None, str | None]:
+    stem = Path(filename).stem
+    for rx in (IMG_RE, PIXEL_RE):
+        m = rx.search(stem)
+        if m:
+            date_s = m.group("date")
+            time_s = m.group("time")
+            try:
+                dt = datetime.strptime(date_s + time_s, "%Y%m%d%H%M%S")
+                return dt.strftime(DT_FORMAT), f"Filename {rx.pattern}"
+            except Exception:
+                continue
+    return None, None
+
+
+def dt_from_mtime(path: Path) -> tuple[str, str]:
+    dt = datetime.fromtimestamp(path.stat().st_mtime)
+    return dt.strftime(DT_FORMAT), "Filesystem Modified"
+
+
+def parse_exif_metadata(path: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "width": 0,
+        "height": 0,
+        "latitude": None,
+        "longitude": None,
+        "altitude_meters": None,
+        "final_dt": "",
+        "dt_source": "",
+        "exif_tag_count": 0,
+        "gps_present": False,
+        "raw_exif_keys": [],
+        "raw_gps_keys": [],
+    }
+
+    with Image.open(path) as img:
+        img = ImageOps.exif_transpose(img)
+        result["width"], result["height"] = img.size
+
+        exif = img.getexif()
+        result["exif_tag_count"] = len(exif) if exif else 0
+        named = exif_to_named_dict(exif)
+        result["raw_exif_keys"] = sorted(str(k) for k in named.keys())
+
+        # Date/time preference order
+        for key_name, source_name in (
+            ("DateTimeOriginal", "EXIF DateTimeOriginal"),
+            ("DateTimeDigitized", "EXIF DateTimeDigitized"),
+            ("DateTime", "EXIF DateTime"),
+        ):
+            raw_dt = named.get(key_name)
+            if raw_dt:
                 try:
-                    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone().replace(tzinfo=None)
-                    if is_valid_dt(dt):
-                        return dt, f"Google Takeout JSON: {candidate.name}"
+                    dt = datetime.strptime(str(raw_dt), "%Y:%m:%d %H:%M:%S")
+                    result["final_dt"] = dt.strftime(DT_FORMAT)
+                    result["dt_source"] = source_name
+                    break
                 except Exception:
                     pass
-        except Exception:
-            continue
-    return None, None
+
+        gps_named, lat, lon, alt = decode_gps_ifd(exif)
+        result["raw_gps_keys"] = sorted(str(k) for k in gps_named.keys())
+        result["gps_present"] = bool(gps_named)
+        result["latitude"] = lat
+        result["longitude"] = lon
+        result["altitude_meters"] = alt
+
+    if not result["final_dt"]:
+        dt_value, dt_source = dt_from_filename(path.name)
+        if dt_value:
+            result["final_dt"] = dt_value
+            result["dt_source"] = dt_source
+
+    if not result["final_dt"]:
+        dt_value, dt_source = dt_from_mtime(path)
+        result["final_dt"] = dt_value
+        result["dt_source"] = dt_source
+
+    return result
 
 
-def get_filename_datetime(file_path: str):
-    name = Path(file_path).name
-    for pattern in FILENAME_DATE_PATTERNS:
-        m = pattern.search(name)
-        if not m:
-            continue
-        try:
-            parts = [int(x) for x in m.groups()]
-            dt = datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
-            if is_valid_dt(dt):
-                return dt
-        except Exception:
-            continue
-    return None
+def parsed_media_for(path: Path, root: Path) -> ParsedMedia:
+    rel_fqn = rel_fqn_for(path, root)
+    meta = parse_exif_metadata(path)
+    sha1 = file_sha1(path)
+    stat = path.stat()
+
+    return ParsedMedia(
+        sha1=sha1,
+        rel_fqn=rel_fqn,
+        original_filename=path.name,
+        final_dt=meta["final_dt"],
+        dt_source=meta["dt_source"],
+        width=int(meta["width"] or 0),
+        height=int(meta["height"] or 0),
+        latitude=meta["latitude"],
+        longitude=meta["longitude"],
+        altitude_meters=meta["altitude_meters"],
+        path_tags=path_tags_for(rel_fqn),
+        is_deleted=is_deleted_rel(rel_fqn),
+        extension=file_extension(path).upper().lstrip("."),
+        file_size=int(stat.st_size),
+        mtime_utc=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
+    )
 
 
-def get_best_datetime(file_path: str):
-    # 1) Standard EXIF date fields
-    exif_found = get_pillow_exif_datetimes(file_path)
-    priority = {
-        "DateTimeOriginal": 0,
-        "DateTimeDigitized": 1,
-        "DateTime": 2,
-    }
-    if exif_found:
-        exif_found.sort(key=lambda x: priority.get(x[0], 99))
-        tag_name, dt = exif_found[0]
-        return dt, f"EXIF: {tag_name}"
-
-    # 2) XMP metadata embedded in the file
-    xmp_found = extract_xmp_datetimes(file_path)
-    if xmp_found:
-        _, dt = xmp_found[0]
-        return dt, "XMP"
-
-    # 3) Google Takeout sidecar JSON
-    dt, src = get_google_takeout_datetime(file_path)
-    if dt is not None:
-        return dt, src
-
-    # 4) Filename-derived datetime (useful for Pixel / phone exports)
-    dt = get_filename_datetime(file_path)
-    if dt is not None:
-        return dt, "Filename Pattern"
-
-    return None, None
-
-
-def get_image_size(path: str):
+def ensure_thumb(parsed: ParsedMedia, source_path: Path) -> None:
+    if not WRITE_THUMBS:
+        return
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    thumb_path = THUMB_DIR / f"{parsed.sha1}.jpg"
+    if thumb_path.exists():
+        return
     try:
-        with Image.open(path) as img:
-            return img.width, img.height
-    except Exception:
-        return None, None
+        with Image.open(source_path) as img:
+            img = ImageOps.exif_transpose(img)
+            img = img.convert("RGB")
+            img.thumbnail((THUMB_MAX_DIM, THUMB_MAX_DIM))
+            img.save(thumb_path, "JPEG", quality=THUMB_QUALITY)
+    except Exception as exc:
+        print(f"[WARN] thumb failed for {source_path}: {exc}")
 
 
-def generate_thumbnail(image_path: str, thumb_path: str):
-    os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
-    with Image.open(image_path) as img:
-        img = ImageOps.exif_transpose(img)
-        img.thumbnail((400, 400))
-        img.convert("RGB").save(thumb_path, "JPEG", quality=85)
-
-
-def resolve_file_date(file_path: str, archive_rel_path: str):
-    if "undated" in archive_rel_path.lower():
-        return "0000-00-00 00:00:00", "Path Override: Undated"
-
-    best_dt, best_source = get_best_datetime(file_path)
-    if is_valid_dt(best_dt):
-        return best_dt.strftime("%Y-%m-%d %H:%M:%S"), best_source
-
-    try:
-        mtime = os.path.getmtime(file_path)
-        internal_dt = safe_datetime_from_timestamp(mtime)
-        if internal_dt is not None:
-            return internal_dt.strftime("%Y-%m-%d %H:%M:%S"), "File Modification"
-    except OSError:
-        pass
-
-    return "0000-00-00 00:00:00", "Fallback"
-
-
-def ensure_parent_dir(path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-
-# ------------------------------------------------------------
-# DATABASE
-# ------------------------------------------------------------
-
-def init_db(conn: sqlite3.Connection):
+def ensure_db_extensions(conn: sqlite3.Connection) -> None:
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS media (
-            sha1 TEXT PRIMARY KEY,
-            rel_fqn TEXT NOT NULL,
-            original_filename TEXT,
-            path_tags TEXT,
-            final_dt TEXT,
-            dt_source TEXT,
-            is_deleted INTEGER DEFAULT 0,
-            custom_notes TEXT DEFAULT '',
-            custom_tags TEXT DEFAULT ''
+        CREATE TABLE IF NOT EXISTS composite_cache (
+            path_key TEXT PRIMARY KEY,
+            sha1_list TEXT,
+            composite_hash TEXT,
+            candidate_hash TEXT DEFAULT '',
+            selection_version TEXT DEFAULT ''
         )
     """)
     conn.commit()
 
 
-def load_existing_sha1s(conn: sqlite3.Connection):
-    cur = conn.cursor()
-    cur.execute("SELECT sha1 FROM media")
-    return {row[0] for row in cur.fetchall()}
+def read_preserved_fields(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    try:
+        rows = conn.execute("""
+            SELECT sha1, custom_tags, custom_notes
+            FROM media
+        """).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for sha1, custom_tags, custom_notes in rows:
+            out[str(sha1)] = {
+                "custom_tags": custom_tags or "",
+                "custom_notes": custom_notes or "",
+            }
+        return out
+    except sqlite3.OperationalError:
+        return {}
 
 
-def insert_media(conn: sqlite3.Connection, sha1: str, rel_fqn: str,
-                 original_filename: str, path_tags: str,
-                 final_dt: str, dt_source: str):
+def rebuild_media_table(conn: sqlite3.Connection, rows: list[ParsedMedia]) -> None:
+    preserved = read_preserved_fields(conn)
+
+    conn.execute("DROP TABLE IF EXISTS media_new")
     conn.execute("""
-        INSERT OR IGNORE INTO media
-        (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source, is_deleted, custom_notes, custom_tags)
-        VALUES (?, ?, ?, ?, ?, ?, 0, '', '')
-    """, (sha1, rel_fqn, original_filename, path_tags, final_dt, dt_source))
+        CREATE TABLE media_new (
+            sha1 TEXT PRIMARY KEY,
+            rel_fqn TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            final_dt TEXT NOT NULL,
+            dt_source TEXT NOT NULL,
+            width INTEGER DEFAULT 0,
+            height INTEGER DEFAULT 0,
+            latitude REAL,
+            longitude REAL,
+            altitude_meters REAL,
+            path_tags TEXT DEFAULT '',
+            custom_tags TEXT DEFAULT '',
+            custom_notes TEXT DEFAULT '',
+            is_deleted INTEGER DEFAULT 0,
+            extension TEXT DEFAULT '',
+            file_size INTEGER DEFAULT 0,
+            mtime_utc TEXT DEFAULT ''
+        )
+    """)
 
+    for row in rows:
+        keep = preserved.get(row.sha1, {})
+        conn.execute("""
+            INSERT INTO media_new (
+                sha1, rel_fqn, original_filename, final_dt, dt_source,
+                width, height, latitude, longitude, altitude_meters,
+                path_tags, custom_tags, custom_notes, is_deleted,
+                extension, file_size, mtime_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row.sha1,
+            row.rel_fqn,
+            row.original_filename,
+            row.final_dt,
+            row.dt_source,
+            row.width,
+            row.height,
+            row.latitude,
+            row.longitude,
+            row.altitude_meters,
+            row.path_tags,
+            keep.get("custom_tags", ""),
+            keep.get("custom_notes", ""),
+            row.is_deleted,
+            row.extension,
+            row.file_size,
+            row.mtime_utc,
+        ))
 
-# ------------------------------------------------------------
-# TAG HELPERS
-# ------------------------------------------------------------
-
-def make_path_tags(source_base: str, rel_dir: str) -> str:
-    parts = []
-
-    if source_base and source_base != ".":
-        parts.append(source_base)
-
-    if rel_dir and rel_dir != ".":
-        parts.extend(Path(rel_dir).parts)
-
-    cleaned = []
-    for p in parts:
-        p = p.strip().replace("_", " ").replace("-", " ")
-        if p:
-            cleaned.append(p)
-
-    return "|".join(cleaned)
-
-
-# ------------------------------------------------------------
-# INGEST LOGIC
-# ------------------------------------------------------------
-
-def run_ingest():
-    print("--- STARTING ROBUST INGEST (V4.5 Robust Date Extraction) ---")
-
-    os.makedirs(DEST_ROOT, exist_ok=True)
-    os.makedirs(THUMB_DIR, exist_ok=True)
-
-    conn = sqlite3.connect(DB_PATH)
-    init_db(conn)
-
-    existing_sha1s = load_existing_sha1s(conn)
-
-    examined = 0
-    new_added = 0
-    healed = 0
-    skipped = 0
-    tiny = 0
-    unreadable = 0
-    warnings = 0
-
-    start_time = time.time()
-    last_print = start_time
-    since_commit = 0
-    current_file = ""
-
-    for source_root in SOURCES:
-        source_root = os.path.normpath(source_root)
-        source_base = os.path.basename(source_root.rstrip("\\/"))
-
-        print(f"[Source] Scanning: {source_root}")
-
-        for root, dirs, files in os.walk(source_root):
-            for name in files:
-                examined += 1
-                since_commit += 1
-
-                full_path = os.path.join(root, name)
-                current_file = full_path
-
-                rel_dir = os.path.relpath(root, source_root)
-                if rel_dir == ".":
-                    rel_dir = ""
-
-                archive_rel_path = os.path.join(source_base, rel_dir) if rel_dir else source_base
-                rel_fqn = os.path.join(source_base, rel_dir, name) if rel_dir else os.path.join(source_base, name)
-
-                dest_path = os.path.join(DEST_ROOT, rel_fqn)
-
-                try:
-                    width, height = get_image_size(full_path)
-
-                    if width is None or height is None:
-                        unreadable += 1
-                        continue
-
-                    if width < MIN_WIDTH or height < MIN_HEIGHT:
-                        tiny += 1
-                        continue
-
-                    sha1 = compute_sha1(full_path)
-
-                    if sha1 in existing_sha1s:
-                        skipped += 1
-                        continue
-
-                    try:
-                        final_dt, source_label = resolve_file_date(full_path, archive_rel_path)
-                    except Exception:
-                        warnings += 1
-                        final_dt, source_label = "0000-00-00 00:00:00", "Date Error Fallback"
-
-                    path_tags = make_path_tags(source_base, rel_dir)
-
-                    ensure_parent_dir(dest_path)
-
-                    if not os.path.exists(dest_path):
-                        shutil.copy2(full_path, dest_path)
-                        new_added += 1
-                    else:
-                        healed += 1
-
-                    insert_media(
-                        conn,
-                        sha1=sha1,
-                        rel_fqn=rel_fqn.replace("\\", "/"),
-                        original_filename=name,
-                        path_tags=path_tags,
-                        final_dt=final_dt,
-                        dt_source=source_label,
-                    )
-                    existing_sha1s.add(sha1)
-
-                    thumb_path = os.path.join(THUMB_DIR, f"{sha1}.jpg")
-                    if not os.path.exists(thumb_path):
-                        try:
-                            generate_thumbnail(dest_path, thumb_path)
-                        except Exception:
-                            warnings += 1
-
-                except Exception:
-                    warnings += 1
-
-                now = time.time()
-
-                if now - last_print >= PROGRESS_INTERVAL:
-                    elapsed = now - start_time
-                    rate = examined / elapsed if elapsed > 0 else 0.0
-
-                    print(
-                        f"[Heartbeat] Examined: {examined} | "
-                        f"New: {new_added} | "
-                        f"Healed: {healed} | "
-                        f"Skipped: {skipped} | "
-                        f"Tiny: {tiny} | "
-                        f"Unreadable: {unreadable} | "
-                        f"Warnings: {warnings} | "
-                        f"{rate:.1f} files/sec"
-                    )
-                    print(f"            Current: {current_file}")
-
-                    last_print = now
-
-                if since_commit >= COMMIT_INTERVAL:
-                    conn.commit()
-                    print(f"[Checkpoint] committed at examined={examined}")
-                    since_commit = 0
-
+    conn.execute("DROP TABLE IF EXISTS media")
+    conn.execute("ALTER TABLE media_new RENAME TO media")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_dt ON media(final_dt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_rel ON media(rel_fqn)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_deleted ON media(is_deleted)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_lat_lon ON media(latitude, longitude)")
     conn.commit()
-    conn.close()
 
-    duration = time.time() - start_time
 
-    print("\n--- INGEST COMPLETE ---")
-    print(f"Duration: {duration:.1f}s")
-    print(f"Examined: {examined}")
-    print(f"New added: {new_added}")
-    print(f"Files healed: {healed}")
-    print(f"Duplicates skipped: {skipped}")
-    print(f"Tiny images skipped: {tiny}")
-    print(f"Unreadable images skipped: {unreadable}")
-    print(f"Warnings: {warnings}")
+def inspect_file(path_str: str) -> int:
+    path = Path(path_str)
+    if not path.exists():
+        print(f"[ERROR] File not found: {path}")
+        return 1
+
+    print("=" * 90)
+    print(f"Inspecting: {path}")
+    print("=" * 90)
+    parsed = parse_exif_metadata(path)
+    for k, v in parsed.items():
+        print(f"{k}: {v}")
+
+    root_for_rel = ARCHIVE_ROOT if str(path).startswith(str(ARCHIVE_ROOT)) else path.parent
+    pm = parsed_media_for(path, root_for_rel)
+
+    print("-" * 90)
+    print("Normalized media row preview:")
+    for field_name, field_value in pm.__dict__.items():
+        print(f"{field_name}: {field_value}")
+    return 0
+
+
+def rebuild_ingest() -> int:
+    if not ARCHIVE_ROOT.exists():
+        print(f"[ERROR] ARCHIVE_ROOT not found: {ARCHIVE_ROOT}")
+        return 1
+
+    files = list(iter_archive_files(ARCHIVE_ROOT))
+    skipped_non_jpeg = 0
+
+    for dirpath, dirnames, filenames in os.walk(ARCHIVE_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
+        for filename in filenames:
+            p = Path(dirpath) / filename
+            if p.is_file() and file_extension(p) not in ALLOWED_EXTENSIONS:
+                skipped_non_jpeg += 1
+
+    print(f"Archive root: {ARCHIVE_ROOT}")
+    print(f"JPEG files to ingest: {len(files)}")
+    print(f"Non-JPEG files skipped: {skipped_non_jpeg}")
+    print(f"Started: {utc_now_str()}")
+
+    rows: list[ParsedMedia] = []
+    exif_gps_count = 0
+    no_gps_count = 0
+    exif_time_count = 0
+    filename_time_count = 0
+    fs_time_count = 0
+
+    for idx, path in enumerate(files, start=1):
+        try:
+            meta = parse_exif_metadata(path)
+
+            if meta.get("latitude") is not None and meta.get("longitude") is not None:
+                exif_gps_count += 1
+            else:
+                no_gps_count += 1
+
+            dt_source = str(meta.get("dt_source") or "")
+            if dt_source.startswith("EXIF"):
+                exif_time_count += 1
+            elif dt_source.startswith("Filename"):
+                filename_time_count += 1
+            else:
+                fs_time_count += 1
+
+            parsed = ParsedMedia(
+                sha1=file_sha1(path),
+                rel_fqn=rel_fqn_for(path, ARCHIVE_ROOT),
+                original_filename=path.name,
+                final_dt=str(meta.get("final_dt") or ""),
+                dt_source=dt_source,
+                width=int(meta.get("width") or 0),
+                height=int(meta.get("height") or 0),
+                latitude=meta.get("latitude"),
+                longitude=meta.get("longitude"),
+                altitude_meters=meta.get("altitude_meters"),
+                path_tags=path_tags_for(rel_fqn_for(path, ARCHIVE_ROOT)),
+                is_deleted=is_deleted_rel(rel_fqn_for(path, ARCHIVE_ROOT)),
+                extension=file_extension(path).upper().lstrip("."),
+                file_size=int(path.stat().st_size),
+                mtime_utc=datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
+            )
+            rows.append(parsed)
+            ensure_thumb(parsed, path)
+
+            if idx % 500 == 0:
+                print(f"[Progress] {idx}/{len(files)}")
+        except Exception as exc:
+            print(f"[WARN] Failed to ingest {path}: {exc}")
+
+    print(f"Rows parsed: {len(rows)}")
+    print(f"Images with GPS: {exif_gps_count}")
+    print(f"Images without GPS: {no_gps_count}")
+    print(f"Time from EXIF: {exif_time_count}")
+    print(f"Time from filename: {filename_time_count}")
+    print(f"Time from filesystem: {fs_time_count}")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        ensure_db_extensions(conn)
+        if REBUILD_MEDIA_TABLE:
+            rebuild_media_table(conn, rows)
+        else:
+            print("[WARN] REBUILD_MEDIA_TABLE is False, nothing written.")
+
+    print(f"Completed: {utc_now_str()}")
+    return 0
+
+
+def main() -> int:
+    if INSPECT_FILE:
+        return inspect_file(INSPECT_FILE)
+    return rebuild_ingest()
 
 
 if __name__ == "__main__":
-    run_ingest()
+    raise SystemExit(main())
