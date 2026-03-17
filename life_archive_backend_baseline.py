@@ -2461,6 +2461,64 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+def _smoothstep(edge0: float, edge1: float, x: float) -> float:
+    if edge1 <= edge0:
+        return 1.0 if x >= edge1 else 0.0
+    t = _clamp01((x - edge0) / (edge1 - edge0))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _face_subjectness_from_meta(meta: dict[str, Any]) -> float:
+    faces_meta = meta.get("faces") or {}
+    face_summary = faces_meta.get("summary") or {}
+    face_boxes = faces_meta.get("boxes") or []
+
+    if not isinstance(face_boxes, list):
+        face_boxes = []
+
+    area_ratios: list[float] = []
+    for box in face_boxes:
+        if not isinstance(box, dict):
+            continue
+        ratio = _safe_float(box.get("area_ratio"), 0.0)
+        if ratio > 0:
+            area_ratios.append(ratio)
+
+    area_ratios.sort(reverse=True)
+
+    face_count = int(face_summary.get("face_count") or 0)
+    if face_count <= 0 and area_ratios:
+        face_count = len(area_ratios)
+    if face_count <= 0:
+        return 0.0
+
+    largest_ratio = area_ratios[0] if area_ratios else _safe_float(face_summary.get("largest_face_area_ratio"), 0.0)
+    second_ratio = area_ratios[1] if len(area_ratios) > 1 else 0.0
+    top2_total = largest_ratio + second_ratio
+
+    # Three practical regimes:
+    # 1) tiny background faces -> near zero contribution
+    # 2) subject-level medium faces -> ramp up quickly
+    # 3) dominant close-up faces -> saturate near the top
+    largest_signal = _smoothstep(0.006, 0.038, largest_ratio)
+    second_signal = _smoothstep(0.003, 0.022, second_ratio)
+    pair_signal = _smoothstep(0.010, 0.055, top2_total)
+    count_signal = _smoothstep(1.0, 3.0, float(face_count))
+
+    subjectness = (
+        largest_signal * 0.44 +
+        second_signal * 0.18 +
+        pair_signal * 0.30 +
+        count_signal * 0.08
+    )
+
+    # Preserve the near-zero behavior for truly incidental background people.
+    if largest_ratio < 0.005 and top2_total < 0.008:
+        subjectness *= 0.20
+
+    return _clamp01(subjectness)
+
+
 def _face_score_from_meta(meta: dict[str, Any]) -> float:
     faces = (meta.get("faces") or {}).get("summary") or {}
     face_count = int(faces.get("face_count") or 0)
@@ -2490,36 +2548,97 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
     smiling_count = int(summary.get("smiling_face_count") or 0)
     eyes_open_count = int(summary.get("eyes_open_face_count") or 0)
 
+    # Count features still matter, but they should not overpower the actual
+    # emotional quality signal.
     count_bonus = min(1.0, (0.45 * good_count + 0.35 * smiling_count + 0.20 * eyes_open_count) / 3.0)
 
+    # Strongly prefer group coherence over one slightly better single face.
+    # In the cheeky-grin case, the image with the better overall moment should
+    # win even if the rival has a trivially higher best-face score.
+    expression_gap = max(0.0, best_face - avg_top2)
+    coherence_expr = max(0.0, avg_top2 - (expression_gap * 0.60))
+    consistency_bonus = _clamp01(1.0 - (expression_gap / 0.06))
+
+    # Soft asymmetry bonus. Slight imperfection can read as more human / playful.
+    asymmetry_bonus = 0.0
+    face_expression = meta.get("face_expression") or {}
+    face_rows = face_expression.get("faces") or face_expression.get("face_rows") or []
+    if isinstance(face_rows, list) and face_rows:
+        asym_values = []
+        for row in face_rows:
+            if not isinstance(row, dict):
+                continue
+            asym = row.get("asymmetry_score")
+            if asym is None:
+                continue
+            asym_values.append(_safe_float(asym, 0.0))
+        if asym_values:
+            avg_asym = sum(asym_values[:2]) / min(2, len(asym_values))
+            # Favor slight asymmetry, but do not reward extreme distortion.
+            asymmetry_bonus = _clamp01(avg_asym / 0.16) * 0.05
+
     signal = (
-        best_face * 0.24 +
-        avg_top2 * 0.46 +
-        prominent_expr * 0.08 +
-        people_moment * 0.06 +
-        count_bonus * 0.16
+        coherence_expr * 0.62 +
+        best_face * 0.10 +
+        prominent_expr * 0.04 +
+        people_moment * 0.09 +
+        count_bonus * 0.05 +
+        consistency_bonus * 0.05 +
+        asymmetry_bonus
     )
     return _clamp01(signal)
 
 
 def _people_weight_from_meta(meta: dict[str, Any]) -> float:
-    faces = (meta.get("faces") or {}).get("summary") or {}
+    faces_meta = meta.get("faces") or {}
+    faces = faces_meta.get("summary") or {}
+    face_boxes = faces_meta.get("boxes") or []
     face_count = int(faces.get("face_count") or 0)
     prominent_count = int(faces.get("prominent_face_count") or 0)
-    largest_ratio = _safe_float(faces.get("largest_face_area_ratio"), 0.0)
 
     if face_count <= 0:
         return 0.0
 
-    # If faces are the subject, expressions should dominate.
-    # Tiny background faces should still contribute almost nothing.
-    largest_component = _clamp01((largest_ratio - 0.010) / 0.045)
-    prominent_component = _clamp01(prominent_count / 2.0)
+    if not isinstance(face_boxes, list):
+        face_boxes = []
 
-    if prominent_count <= 0 and largest_ratio < 0.010:
-        return 0.03
+    area_ratios = sorted(
+        [_safe_float(box.get("area_ratio"), 0.0) for box in face_boxes if isinstance(box, dict)],
+        reverse=True,
+    )
+    largest_ratio = area_ratios[0] if area_ratios else _safe_float(faces.get("largest_face_area_ratio"), 0.0)
+    second_ratio = area_ratios[1] if len(area_ratios) > 1 else 0.0
+    top2_total = largest_ratio + second_ratio
 
-    weight = 0.12 + (largest_component * 0.82) + (prominent_component * 0.10)
+    subjectness = _face_subjectness_from_meta(meta)
+
+    # Map face geometry into a smooth people-weight curve. This avoids a brittle
+    # binary threshold while still pushing subject-level faces into people mode.
+    weight = 0.02 + (subjectness ** 0.82) * 0.86
+
+    # Truly tiny background faces should contribute almost nothing.
+    if prominent_count <= 0 and largest_ratio < 0.006 and top2_total < 0.009:
+        return 0.02
+
+    # Two medium faces are a legitimate human-subject photo even when the raw
+    # detector does not call either one "prominent".
+    if face_count >= 2 and largest_ratio >= 0.018 and second_ratio >= 0.008:
+        weight = max(weight, 0.64)
+    if face_count >= 2 and largest_ratio >= 0.022 and second_ratio >= 0.010:
+        weight = max(weight, 0.72)
+    if face_count >= 2 and top2_total >= 0.034:
+        weight = max(weight, 0.78)
+
+    # Close-up portraits should still saturate aggressively.
+    if prominent_count >= 1 and largest_ratio >= 0.018:
+        weight = max(weight, 0.74)
+    if prominent_count >= 1 and largest_ratio >= 0.028:
+        weight = max(weight, 0.86)
+    if prominent_count >= 1 and largest_ratio >= 0.045:
+        weight = max(weight, 0.93)
+    if prominent_count >= 2 and largest_ratio >= 0.028:
+        weight = max(weight, 0.91)
+
     return _clamp01(weight)
 
 
@@ -2557,12 +2676,12 @@ def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
     )
 
     people_score = (
-        technical * 0.10 +
-        aesthetic * 0.05 +
-        subject_prominence * 0.03 +
-        semantic * 0.02 +
-        face_score * 0.02 +
-        face_expression_score * 0.78
+        technical * 0.05 +
+        aesthetic * 0.03 +
+        subject_prominence * 0.01 +
+        semantic * 0.01 +
+        face_score * 0.01 +
+        face_expression_score * 0.89
     )
 
     score = (scene_score * (1.0 - people_weight)) + (people_score * people_weight)
@@ -2643,12 +2762,12 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     )
 
     people_score = (
-        technical * 0.14 +
-        aesthetic * 0.05 +
-        subject_prominence * 0.03 +
-        semantic * 0.02 +
-        face_score * 0.02 +
-        face_expression_score * 0.74
+        technical * 0.08 +
+        aesthetic * 0.03 +
+        subject_prominence * 0.01 +
+        semantic * 0.01 +
+        face_score * 0.01 +
+        face_expression_score * 0.86
     )
 
     score = (scene_score * (1.0 - people_weight)) + (people_score * people_weight)
