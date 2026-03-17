@@ -751,6 +751,7 @@ HTML_TEMPLATE = r"""
             {% for p in photos %}
             <div class="card photo-card" data-sha="{{ p.sha1 }}" oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
                 <div class="cluster-badge"></div>
+                <div class="keeper-badge"></div>
                 <div class="photo-select-wrap">
                     <input type="checkbox" class="photo-select-checkbox" data-sha="{{ p.sha1 }}" aria-label="Select image">
                 </div>
@@ -1275,12 +1276,14 @@ HTML_TEMPLATE = r"""
         function clearClusterVisuals() {
             clusterMembership = new Map();
             document.querySelectorAll('.photo-card').forEach(card => {
-                card.classList.remove('clustered');
+                card.classList.remove('clustered', 'keeper1', 'keeper2');
                 for (let i = 0; i < 8; i++) {
                     card.classList.remove(`cluster-${i}`);
                 }
                 const badge = card.querySelector('.cluster-badge');
                 if (badge) badge.textContent = '';
+                const keeperBadge = card.querySelector('.keeper-badge');
+                if (keeperBadge) keeperBadge.textContent = '';
             });
         }
 
@@ -1290,13 +1293,25 @@ HTML_TEMPLATE = r"""
             clusters.forEach((cluster, idx) => {
                 const label = String(idx + 1);
                 const colorClass = `cluster-${idx % 8}`;
+                const primary = String(cluster.primary_sha1 || '');
+                const secondary = String(cluster.secondary_sha1 || '');
                 (cluster.sha1s || []).forEach(sha => {
-                    clusterMembership.set(String(sha), idx + 1);
-                    const card = document.querySelector(`.photo-card[data-sha="${String(sha)}"]`);
+                    const shaStr = String(sha);
+                    clusterMembership.set(shaStr, idx + 1);
+                    const card = document.querySelector(`.photo-card[data-sha="${shaStr}"]`);
                     if (!card) return;
                     card.classList.add('clustered', colorClass);
+                    if (shaStr === primary) card.classList.add('keeper1');
+                    else if (shaStr === secondary) card.classList.add('keeper2');
+
                     const badge = card.querySelector('.cluster-badge');
                     if (badge) badge.textContent = label;
+                    const keeperBadge = card.querySelector('.keeper-badge');
+                    if (keeperBadge) {
+                        if (shaStr === primary) keeperBadge.textContent = '1';
+                        else if (shaStr === secondary) keeperBadge.textContent = '2';
+                        else keeperBadge.textContent = '';
+                    }
                 });
             });
         }
@@ -1331,6 +1346,8 @@ HTML_TEMPLATE = r"""
                         gps_bucket: cluster.gps_bucket,
                         start_time: cluster.start_time,
                         end_time: cluster.end_time,
+                        primary_sha1: cluster.primary_sha1 || '',
+                        secondary_sha1: cluster.secondary_sha1 || '',
                         sha1s: (cluster.sha1s || []).join(', ')
                     })));
                 }
@@ -2948,12 +2965,19 @@ def create_app(config: ArchiveConfig) -> Flask:
             clustered_sha1s.extend(sha1s)
             first = cluster[0]
             last = cluster[-1]
+
+            ranked = _rank_sha1s_for_mode(store, sha1s, "cull")
+            primary_sha1 = ranked[0]["sha1"] if len(ranked) >= 1 else ""
+            secondary_sha1 = ranked[1]["sha1"] if len(ranked) >= 2 else ""
+
             cluster_debug.append({
                 "cluster_id": idx,
                 "size": len(cluster),
                 "gps_bucket": _gps_bucket_key_for_cluster(first),
                 "start_time": str(first.get("final_dt") or ""),
                 "end_time": str(last.get("final_dt") or ""),
+                "primary_sha1": primary_sha1,
+                "secondary_sha1": secondary_sha1,
                 "sha1s": sha1s,
             })
 
