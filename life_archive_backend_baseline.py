@@ -273,7 +273,6 @@ HTML_TEMPLATE = r"""
             z-index: 9999;
             align-items: center;
             justify-content: center;
-            user-select: none;
             padding: 20px;
             box-sizing: border-box;
         }
@@ -640,12 +639,15 @@ HTML_TEMPLATE = r"""
             font-size: 12px;
             line-height: 1.45;
             white-space: pre-wrap;
+            user-select: text;
+            -webkit-user-select: text;
         }
 
     </style>
 </head>
 <body>
     <div id="context-menu">
+        <div class="menu-item" onclick="showClusters()">Show Clusters</div>
         <div class="menu-item" onclick="selectByFormula('interesting', 1)">Select Most Interesting Picture</div>
         <div class="menu-item" onclick="selectByFormula('cull', 1)">Select Best Picture for Culling</div>
         <div class="menu-item" onclick="selectByFormula('cull', 2)">Select Best Two Pictures for Culling</div>
@@ -748,6 +750,7 @@ HTML_TEMPLATE = r"""
         <div class="photo-grid">
             {% for p in photos %}
             <div class="card photo-card" data-sha="{{ p.sha1 }}" oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
+                <div class="cluster-badge"></div>
                 <div class="photo-select-wrap">
                     <input type="checkbox" class="photo-select-checkbox" data-sha="{{ p.sha1 }}" aria-label="Select image">
                 </div>
@@ -1194,6 +1197,7 @@ HTML_TEMPLATE = r"""
         function clearSelection() {
             if (selectedSha1s.size === 0) return;
             selectedSha1s.clear();
+            clearClusterVisuals();
             refreshSelectionUI();
         }
 
@@ -1243,6 +1247,7 @@ HTML_TEMPLATE = r"""
                     return;
                 }
 
+                clearClusterVisuals();
                 selectedSha1s = new Set(data.winners || []);
                 refreshSelectionUI();
 
@@ -1264,6 +1269,77 @@ HTML_TEMPLATE = r"""
                 alert('Selection formula request failed.');
             }
         }
+
+        var clusterMembership = new Map();
+
+        function clearClusterVisuals() {
+            clusterMembership = new Map();
+            document.querySelectorAll('.photo-card').forEach(card => {
+                card.classList.remove('clustered');
+                for (let i = 0; i < 8; i++) {
+                    card.classList.remove(`cluster-${i}`);
+                }
+                const badge = card.querySelector('.cluster-badge');
+                if (badge) badge.textContent = '';
+            });
+        }
+
+        function applyClusterVisuals(clusters) {
+            clearClusterVisuals();
+            if (!Array.isArray(clusters)) return;
+            clusters.forEach((cluster, idx) => {
+                const label = String(idx + 1);
+                const colorClass = `cluster-${idx % 8}`;
+                (cluster.sha1s || []).forEach(sha => {
+                    clusterMembership.set(String(sha), idx + 1);
+                    const card = document.querySelector(`.photo-card[data-sha="${String(sha)}"]`);
+                    if (!card) return;
+                    card.classList.add('clustered', colorClass);
+                    const badge = card.querySelector('.cluster-badge');
+                    if (badge) badge.textContent = label;
+                });
+            });
+        }
+
+        async function showClusters() {
+            const targets = getContextTargets(menuSha1);
+            document.getElementById('context-menu').style.display = 'none';
+            if (!targets || targets.length === 0) return;
+
+            try {
+                const resp = await fetch('/api/select_clusters', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sha1_list: targets
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== 'ok') {
+                    alert(data.message || 'Cluster selection failed.');
+                    return;
+                }
+
+                selectedSha1s = new Set(data.clustered_sha1s || []);
+                applyClusterVisuals(data.clusters || []);
+                refreshSelectionUI();
+
+                if (Array.isArray(data.clusters)) {
+                    console.table(data.clusters.map(cluster => ({
+                        cluster_id: cluster.cluster_id,
+                        size: cluster.size,
+                        gps_bucket: cluster.gps_bucket,
+                        start_time: cluster.start_time,
+                        end_time: cluster.end_time,
+                        sha1s: (cluster.sha1s || []).join(', ')
+                    })));
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Cluster selection request failed.');
+            }
+        }
+
 
         function handleCtx(e, sha1) {
             e.preventDefault();
@@ -2082,9 +2158,9 @@ class ArchiveStore:
                 "custom_notes": media_row.get("custom_notes") or "",
                 "is_deleted": media_row.get("is_deleted"),
                 "dimensions": dimensions,
-                "latitude": "" if lat_val is None else str(lat_val),
-                "longitude": "" if lon_val is None else str(lon_val),
-                "altitude_meters": "" if alt_val is None else str(alt_val),
+                "latitude": "" if lat_val is None else f"{float(lat_val):.6f}",
+                "longitude": "" if lon_val is None else f"{float(lon_val):.6f}",
+                "altitude_meters": "" if alt_val is None else f"{float(alt_val):.1f}",
                 "has_valid_gps": "Yes" if has_valid_gps else "No",
                 "file_extension": str(ext_val),
                 "file_size": "" if file_size_val is None else str(file_size_val),
@@ -2518,6 +2594,64 @@ def _rank_sha1s_for_mode(store: "ArchiveStore", sha1_list: list[str], mode: str)
     )
     return ranked
 
+
+def _parse_dt_for_cluster(value: Any) -> datetime | None:
+    try:
+        dt_str = str(value or "")
+        if not dt_str or dt_str.startswith("0000"):
+            return None
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _gps_bucket_key_for_cluster(item: dict[str, Any], precision: int = 4) -> tuple[float, float] | None:
+    try:
+        lat = float(item.get("latitude"))
+        lon = float(item.get("longitude"))
+        if abs(lat) <= 0.000001 and abs(lon) <= 0.000001:
+            return None
+        return (round(lat, precision), round(lon, precision))
+    except Exception:
+        return None
+
+
+def _find_clusters_in_items(items: list[dict[str, Any]], time_threshold_seconds: int = 15) -> list[list[dict[str, Any]]]:
+    bucket_map: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        key = _gps_bucket_key_for_cluster(item)
+        if key is None:
+            continue
+        bucket_map[key].append(item)
+
+    clusters: list[list[dict[str, Any]]] = []
+    for _bucket_key, bucket_items in bucket_map.items():
+        decorated = []
+        for item in bucket_items:
+            dt = _parse_dt_for_cluster(item.get("final_dt"))
+            if dt is None:
+                continue
+            decorated.append((dt, item))
+        if not decorated:
+            continue
+        decorated.sort(key=lambda pair: pair[0])
+
+        current = [decorated[0][1]]
+        prev_dt = decorated[0][0]
+        for dt, item in decorated[1:]:
+            delta = (dt - prev_dt).total_seconds()
+            if delta <= time_threshold_seconds:
+                current.append(item)
+            else:
+                if len(current) >= 2:
+                    clusters.append(current)
+                current = [item]
+            prev_dt = dt
+        if len(current) >= 2:
+            clusters.append(current)
+
+    return clusters
+
 def create_app(config: ArchiveConfig) -> Flask:
     app = Flask(__name__)
     store = ArchiveStore(config)
@@ -2741,6 +2875,43 @@ def create_app(config: ArchiveConfig) -> Flask:
             "keep_count": keep_count,
             "winners": winners,
             "ranked": ranked,
+        })
+
+
+    @app.route("/api/select_clusters", methods=["POST"])
+    def select_clusters():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+
+        store.load_cache()
+        all_items = store.db_cache + store.undated_cache
+        item_map = {str(item.get("sha1")): item for item in all_items}
+        items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
+
+        clusters = _find_clusters_in_items(items, time_threshold_seconds=15)
+        clustered_sha1s: list[str] = []
+        cluster_debug: list[dict[str, Any]] = []
+
+        for idx, cluster in enumerate(clusters, start=1):
+            sha1s = [str(item.get("sha1")) for item in cluster]
+            clustered_sha1s.extend(sha1s)
+            first = cluster[0]
+            last = cluster[-1]
+            cluster_debug.append({
+                "cluster_id": idx,
+                "size": len(cluster),
+                "gps_bucket": _gps_bucket_key_for_cluster(first),
+                "start_time": str(first.get("final_dt") or ""),
+                "end_time": str(last.get("final_dt") or ""),
+                "sha1s": sha1s,
+            })
+
+        return jsonify({
+            "status": "ok",
+            "clustered_sha1s": clustered_sha1s,
+            "clusters": cluster_debug,
         })
 
     @app.route("/api/lightbox_meta/<sha1>")

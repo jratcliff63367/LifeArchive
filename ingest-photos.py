@@ -26,14 +26,16 @@ from PIL import ExifTags, Image, ImageOps
 # CONFIG
 # ============================================================================
 
-ARCHIVE_ROOT = Path(r"C:\website-photos")
+ARCHIVE_ROOT = Path(r"E:\GatherPhotos")
 
 # Explicit source roots to scan. These may be outside ARCHIVE_ROOT.
 SOURCE_DIRECTORIES = [
-    Path(r"C:\Photos from 2025"),
-    # Path(r"C:\Photos from 2024"),
-]
+    Path(r"E:\LegacyTransfer\HD-TerryTotalBackup-02-27-2023"),
+    Path(r"E:\LegacyTransfer\TransferTest"),
+    Path(r"E:\topaz-undated"),
 
+]
+ 
 DB_PATH = ARCHIVE_ROOT / "archive_index.db"
 THUMB_DIR = ARCHIVE_ROOT / "_thumbs"
 
@@ -151,11 +153,11 @@ def archive_dest_for(source_path: Path, source_root: Path, archive_root: Path) -
     Map an arbitrary source file into the archive tree.
 
     Example:
-        source_root = C:\Photos from 2025
-        source_path = C:\Photos from 2025\foo\bar.jpg
-        archive_root = C:\website-photos
+        source_root = C:/Photos from 2025
+        source_path = C:/Photos from 2025/foo/bar.jpg
+        archive_root = C:/website-photos
     becomes:
-        C:\website-photos\Photos from 2025\foo\bar.jpg
+        C:/website-photos/Photos from 2025/foo/bar.jpg
     """
     relative_inside_source = source_path.relative_to(source_root)
     top_level = source_root.name
