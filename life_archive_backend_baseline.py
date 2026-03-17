@@ -815,6 +815,11 @@ HTML_TEMPLATE = r"""
                 <div id="lb-faces-boxes" style="margin-top:16px;"></div>
             </div>
 
+            <div id="lb-section-face-expression" class="lb-section">
+                <div id="lb-face-expression-summary" class="lb-kv"></div>
+                <div id="lb-face-expression-faces" style="margin-top:16px;"></div>
+            </div>
+
             <div id="lb-section-aesthetic" class="lb-section">
                 <div id="lb-aesthetic" class="lb-kv"></div>
             </div>
@@ -889,6 +894,7 @@ HTML_TEMPLATE = r"""
                     'overview': 'Overview',
                     'technical': 'Technical',
                     'faces': 'Faces',
+                    'face-expression': 'Face Expression',
                     'aesthetic': 'Aesthetic',
                     'semantic': 'Semantic',
                     'ai-summary': 'AI Summary',
@@ -924,6 +930,33 @@ HTML_TEMPLATE = r"""
             }).join('');
             el.innerHTML = html;
         }
+
+        function renderFaceExpressionFaces(faces) {
+            const el = document.getElementById('lb-face-expression-faces');
+            if (!el) return;
+            if (!faces || faces.length === 0) {
+                el.innerHTML = '<div class="lb-empty">No face expression data available.</div>';
+                return;
+            }
+            const html = faces.map((face, idx) => {
+                const rows = [
+                    ['Face', face.face_index != null ? Number(face.face_index) + 1 : (idx + 1)],
+                    ['Area Ratio', face.area_ratio != null ? Number(face.area_ratio).toFixed(4) : ''],
+                    ['Confidence', face.confidence != null ? Number(face.confidence).toFixed(3) : ''],
+                    ['Smile Score', face.smile_score != null ? Number(face.smile_score).toFixed(4) : ''],
+                    ['Eyes Open', face.eyes_open_score != null ? Number(face.eyes_open_score).toFixed(4) : ''],
+                    ['Eye Engage', face.eye_engagement_score != null ? Number(face.eye_engagement_score).toFixed(4) : ''],
+                    ['Asymmetry', face.asymmetry_score != null ? Number(face.asymmetry_score).toFixed(4) : ''],
+                    ['Expression', face.expression_score != null ? Number(face.expression_score).toFixed(4) : ''],
+                    ['Smile L/R', `${face.smile_left != null ? Number(face.smile_left).toFixed(3) : ''} / ${face.smile_right != null ? Number(face.smile_right).toFixed(3) : ''}`],
+                    ['Blink L/R', `${face.blink_left != null ? Number(face.blink_left).toFixed(3) : ''} / ${face.blink_right != null ? Number(face.blink_right).toFixed(3) : ''}`],
+                    ['Squint L/R', `${face.squint_left != null ? Number(face.squint_left).toFixed(3) : ''} / ${face.squint_right != null ? Number(face.squint_right).toFixed(3) : ''}`],
+                ].filter(row => row[1] !== '' && row[1] !== ' / ');
+                return `<div style="margin-bottom:14px; padding:12px; border:1px solid #333; border-radius:10px; background:#171717;">${rows.map(r => `<div class="lb-kv" style="grid-template-columns:120px 1fr; margin-bottom:6px;"><div class="lb-k">${r[0]}</div><div class="lb-v">${r[1]}</div></div>`).join('')}</div>`;
+            }).join('');
+            el.innerHTML = html;
+        }
+
 
         function clearFaceOverlay() {
             const overlay = document.getElementById('lb-face-overlay');
@@ -996,6 +1029,9 @@ HTML_TEMPLATE = r"""
                 const aesthetic = data.aesthetic || {};
                 const semantic = data.semantic || {};
                 const aiSummary = data.ai_summary || {};
+                const faceExpression = data.face_expression || {};
+                const faceExpressionSummary = faceExpression.summary || {};
+                const faceExpressionFaces = faceExpression.faces || [];
                 const raw = data.raw || {};
                 const overviewRows = [
                     ['Filename', overview.original_filename || item.filename || ''],
@@ -1031,6 +1067,19 @@ HTML_TEMPLATE = r"""
                     ['Has Prominent Face', faceSummary.has_prominent_face ?? ''],
                     ['Model Version', faceSummary.model_version || ''],
                     ['Scored At', faceSummary.scored_at || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
+                const faceExpressionRows = [
+                    ['Faces Scored', faceExpressionSummary.face_count_scored ?? ''],
+                    ['Smiling Faces', faceExpressionSummary.smiling_face_count ?? ''],
+                    ['Eyes Open Faces', faceExpressionSummary.eyes_open_face_count ?? ''],
+                    ['Good Expression Faces', faceExpressionSummary.good_expression_face_count ?? ''],
+                    ['Best Face Expression', faceExpressionSummary.best_face_expression_score ?? ''],
+                    ['Avg Top2 Expression', faceExpressionSummary.avg_top2_face_expression_score ?? ''],
+                    ['Prominent Face Expr', faceExpressionSummary.prominent_face_expression_score ?? ''],
+                    ['People Moment Score', faceExpressionSummary.people_moment_score ?? ''],
+                    ['Model Version', faceExpressionSummary.model_version || ''],
+                    ['Scored At', faceExpressionSummary.scored_at || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
                 const aestheticRows = [
@@ -1078,6 +1127,8 @@ HTML_TEMPLATE = r"""
 
                 renderKV('lb-technical', techRows);
                 renderKV('lb-faces-summary', faceRows);
+                renderKV('lb-face-expression-summary', faceExpressionRows);
+                renderFaceExpressionFaces(faceExpressionFaces);
                 renderKV('lb-aesthetic', aestheticRows);
                 renderKV('lb-semantic', semanticRows);
                 renderKV('lb-ai-summary', aiSummaryRows);
@@ -1105,6 +1156,7 @@ HTML_TEMPLATE = r"""
                 const availableTabs = ['overview'];
                 if (techRows.length > 0) availableTabs.push('technical');
                 if (faceRows.length > 0 || faceBoxes.length > 0) availableTabs.push('faces');
+                if (faceExpressionRows.length > 0 || faceExpressionFaces.length > 0) availableTabs.push('face-expression');
                 if (aestheticRows.length > 0) availableTabs.push('aesthetic');
                 if (semanticRows.length > 0) availableTabs.push('semantic');
                 if (aiSummaryRows.length > 0) availableTabs.push('ai-summary');
@@ -1114,6 +1166,8 @@ HTML_TEMPLATE = r"""
                 renderKV('lb-overview', [['Error', 'Failed to load metadata']]);
                 renderKV('lb-technical', []);
                 renderKV('lb-faces-summary', []);
+                renderKV('lb-face-expression-summary', []);
+                renderFaceExpressionFaces([]);
                 renderKV('lb-aesthetic', []);
                 renderKV('lb-semantic', []);
                 renderKV('lb-ai-summary', []);
@@ -1526,6 +1580,7 @@ class ArchiveConfig:
     aesthetic_db_path: Path
     semantic_db_path: Path
     ai_summary_db_path: Path
+    face_expression_db_path: Path
     hero_db_path: Path
     theme_color: str = DEFAULT_THEME_COLOR
 
@@ -2245,6 +2300,24 @@ class ArchiveStore:
                         })
             except Exception:
                 pass
+        if self.config.face_expression_db_path.exists():
+            try:
+                with sqlite3.connect(self.config.face_expression_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    summary_row = conn.execute(
+                        "SELECT * FROM image_face_expression_summary WHERE sha1 = ?",
+                        (sha1,),
+                    ).fetchone()
+                    face_rows = conn.execute(
+                        "SELECT * FROM face_expression WHERE sha1 = ? ORDER BY face_index",
+                        (sha1,),
+                    ).fetchall()
+                result["face_expression"] = {
+                    "summary": dict(summary_row) if summary_row else {},
+                    "faces": [dict(r) for r in face_rows],
+                }
+            except Exception:
+                pass
 
         if self.config.aesthetic_db_path.exists():
             try:
@@ -2362,6 +2435,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         aesthetic_db_path=root / "aesthetic_scores.sqlite",
         semantic_db_path=root / "semantic_scores.sqlite",
         ai_summary_db_path=root / "ai_summaries.sqlite",
+        face_expression_db_path=root / "face_expression.sqlite",
         hero_db_path=root / "hero_scores.sqlite",
         theme_color=theme_color,
     )
