@@ -1316,6 +1316,8 @@ HTML_TEMPLATE = r"""
                         aesthetic: item.breakdown?.aesthetic_score ?? '',
                         prominence: item.breakdown?.subject_prominence_score ?? '',
                         semantic: item.breakdown?.semantic_score ?? '',
+                        face_expression: item.breakdown?.face_expression_score ?? '',
+                        people_weight: item.breakdown?.people_weight ?? '',
                         note: item.breakdown?.note ?? ''
                     })));
                 }
@@ -2474,6 +2476,52 @@ def _face_score_from_meta(meta: dict[str, Any]) -> float:
     return _clamp01(score)
 
 
+def _face_expression_summary_from_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    return (meta.get("face_expression") or {}).get("summary") or {}
+
+
+def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
+    summary = _face_expression_summary_from_meta(meta)
+    best_face = _safe_float(summary.get("best_face_expression_score"), 0.0)
+    avg_top2 = _safe_float(summary.get("avg_top2_face_expression_score"), 0.0)
+    prominent_expr = _safe_float(summary.get("prominent_face_expression_score"), 0.0)
+    people_moment = _safe_float(summary.get("people_moment_score"), 0.0)
+    good_count = int(summary.get("good_expression_face_count") or 0)
+    smiling_count = int(summary.get("smiling_face_count") or 0)
+    eyes_open_count = int(summary.get("eyes_open_face_count") or 0)
+
+    count_bonus = min(1.0, (0.45 * good_count + 0.35 * smiling_count + 0.20 * eyes_open_count) / 3.0)
+
+    signal = (
+        best_face * 0.36 +
+        avg_top2 * 0.24 +
+        prominent_expr * 0.20 +
+        people_moment * 0.14 +
+        count_bonus * 0.06
+    )
+    return _clamp01(signal)
+
+
+def _people_weight_from_meta(meta: dict[str, Any]) -> float:
+    faces = (meta.get("faces") or {}).get("summary") or {}
+    face_count = int(faces.get("face_count") or 0)
+    prominent_count = int(faces.get("prominent_face_count") or 0)
+    largest_ratio = _safe_float(faces.get("largest_face_area_ratio"), 0.0)
+
+    if face_count <= 0:
+        return 0.0
+
+    # Small background faces should contribute very little.
+    largest_component = _clamp01((largest_ratio - 0.018) / 0.10)
+    prominent_component = _clamp01(prominent_count / 2.0)
+
+    if prominent_count <= 0 and largest_ratio < 0.018:
+        return 0.06
+
+    weight = 0.12 + (largest_component * 0.68) + (prominent_component * 0.20)
+    return _clamp01(weight)
+
+
 def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
     technical = _safe_float((meta.get("technical") or {}).get("technical_score"), 0.0)
     aesthetic_meta = meta.get("aesthetic") or {}
@@ -2483,6 +2531,8 @@ def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
     subject_prominence = _safe_float(aesthetic_meta.get("subject_prominence_score"), 0.0)
     semantic = _safe_float((meta.get("semantic") or {}).get("semantic_score"), 0.0)
     face_score = _face_score_from_meta(meta)
+    face_expression_score = _face_expression_signal_from_meta(meta)
+    people_weight = _people_weight_from_meta(meta)
 
     sem = meta.get("semantic") or {}
     contains_people = int(sem.get("contains_people") or 0)
@@ -2497,32 +2547,47 @@ def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
     if any(term in ai_summary for term in ("dog", "puppy", "golden retriever", "great pyrenees", "pet")):
         dog_bonus = 0.05
 
-    score = (
-        technical * 0.14 +
-        aesthetic * 0.20 +
-        subject_prominence * 0.22 +
-        semantic * 0.14 +
-        face_score * 0.30
+    # Base score favors composition / quality when faces do not matter.
+    scene_score = (
+        technical * 0.16 +
+        aesthetic * 0.26 +
+        subject_prominence * 0.26 +
+        semantic * 0.18 +
+        face_score * 0.14
     )
+
+    # People-photo mode heavily favors expressions once faces are prominent.
+    people_score = (
+        technical * 0.14 +
+        aesthetic * 0.12 +
+        subject_prominence * 0.08 +
+        semantic * 0.06 +
+        face_score * 0.08 +
+        face_expression_score * 0.52
+    )
+
+    score = (scene_score * (1.0 - people_weight)) + (people_score * people_weight)
 
     note_parts = []
     if contains_people:
-        score += 0.07
+        score += 0.03
         note_parts.append("people")
     if contains_animals:
         score += 0.06
-        note_parts.append("animals")
         score += subject_prominence * 0.10
+        note_parts.append("animals")
         note_parts.append("animal_prominence")
     if dog_bonus > 0:
         score += dog_bonus
         note_parts.append("dog_summary_bonus")
-    if is_landscape:
+    if is_landscape and people_weight < 0.25:
         score += 0.03
         note_parts.append("landscape")
     if is_food:
         score += 0.02
         note_parts.append("food")
+    if people_weight >= 0.30:
+        note_parts.append("people_mode")
 
     if technical < 0.25:
         score *= 0.55
@@ -2541,6 +2606,8 @@ def _interesting_score(meta: dict[str, Any]) -> dict[str, Any]:
         "subject_prominence_score": round(subject_prominence, 6),
         "semantic_score": round(semantic, 6),
         "face_score": round(face_score, 6),
+        "face_expression_score": round(face_expression_score, 6),
+        "people_weight": round(people_weight, 6),
         "note": ",".join(note_parts),
     }
 
@@ -2554,6 +2621,8 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     subject_prominence = _safe_float(aesthetic_meta.get("subject_prominence_score"), 0.0)
     semantic = _safe_float((meta.get("semantic") or {}).get("semantic_score"), 0.0)
     face_score = _face_score_from_meta(meta)
+    face_expression_score = _face_expression_signal_from_meta(meta)
+    people_weight = _people_weight_from_meta(meta)
 
     sem = meta.get("semantic") or {}
     contains_people = int(sem.get("contains_people") or 0)
@@ -2566,17 +2635,30 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     if contains_animals and any(term in ai_summary for term in ("dog", "puppy", "pet")):
         dog_bonus = 0.03
 
-    score = (
+    # For culling, composition matters unless prominent faces exist.
+    scene_score = (
         technical * 0.34 +
-        aesthetic * 0.20 +
-        subject_prominence * 0.26 +
-        face_score * 0.14 +
-        semantic * 0.06
+        aesthetic * 0.22 +
+        subject_prominence * 0.24 +
+        face_score * 0.12 +
+        semantic * 0.08
     )
+
+    # When prominent faces exist, the better expression should dominate.
+    people_score = (
+        technical * 0.18 +
+        aesthetic * 0.12 +
+        subject_prominence * 0.08 +
+        semantic * 0.04 +
+        face_score * 0.08 +
+        face_expression_score * 0.50
+    )
+
+    score = (scene_score * (1.0 - people_weight)) + (people_score * people_weight)
 
     note_parts = []
     if contains_people:
-        score += 0.03
+        score += 0.02
         note_parts.append("people")
     if contains_animals:
         score += 0.04
@@ -2586,6 +2668,8 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     if dog_bonus > 0:
         score += dog_bonus
         note_parts.append("dog_summary_bonus")
+    if people_weight >= 0.30:
+        note_parts.append("people_mode")
 
     if technical < 0.20:
         score *= 0.45
@@ -2604,6 +2688,8 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
         "subject_prominence_score": round(subject_prominence, 6),
         "semantic_score": round(semantic, 6),
         "face_score": round(face_score, 6),
+        "face_expression_score": round(face_expression_score, 6),
+        "people_weight": round(people_weight, 6),
         "note": ",".join(note_parts),
     }
 
