@@ -2493,10 +2493,10 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
     count_bonus = min(1.0, (0.45 * good_count + 0.35 * smiling_count + 0.20 * eyes_open_count) / 3.0)
 
     signal = (
-        best_face * 0.36 +
+        best_face * 0.42 +
         avg_top2 * 0.24 +
-        prominent_expr * 0.20 +
-        people_moment * 0.14 +
+        prominent_expr * 0.16 +
+        people_moment * 0.12 +
         count_bonus * 0.06
     )
     return _clamp01(signal)
@@ -2511,14 +2511,14 @@ def _people_weight_from_meta(meta: dict[str, Any]) -> float:
     if face_count <= 0:
         return 0.0
 
-    # Small background faces should contribute very little.
-    largest_component = _clamp01((largest_ratio - 0.018) / 0.10)
+    # Ramp up faster once faces become meaningfully large in frame.
+    largest_component = _clamp01((largest_ratio - 0.014) / 0.070)
     prominent_component = _clamp01(prominent_count / 2.0)
 
-    if prominent_count <= 0 and largest_ratio < 0.018:
-        return 0.06
+    if prominent_count <= 0 and largest_ratio < 0.014:
+        return 0.04
 
-    weight = 0.12 + (largest_component * 0.68) + (prominent_component * 0.20)
+    weight = 0.10 + (largest_component * 0.76) + (prominent_component * 0.14)
     return _clamp01(weight)
 
 
@@ -2635,23 +2635,21 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     if contains_animals and any(term in ai_summary for term in ("dog", "puppy", "pet")):
         dog_bonus = 0.03
 
-    # For culling, composition matters unless prominent faces exist.
     scene_score = (
         technical * 0.34 +
-        aesthetic * 0.22 +
+        aesthetic * 0.24 +
         subject_prominence * 0.24 +
-        face_score * 0.12 +
+        face_score * 0.10 +
         semantic * 0.08
     )
 
-    # When prominent faces exist, the better expression should dominate.
     people_score = (
-        technical * 0.18 +
-        aesthetic * 0.12 +
-        subject_prominence * 0.08 +
+        technical * 0.16 +
+        aesthetic * 0.08 +
+        subject_prominence * 0.06 +
         semantic * 0.04 +
-        face_score * 0.08 +
-        face_expression_score * 0.50
+        face_score * 0.04 +
+        face_expression_score * 0.62
     )
 
     score = (scene_score * (1.0 - people_weight)) + (people_score * people_weight)
@@ -2668,7 +2666,7 @@ def _cull_score(meta: dict[str, Any]) -> dict[str, Any]:
     if dog_bonus > 0:
         score += dog_bonus
         note_parts.append("dog_summary_bonus")
-    if people_weight >= 0.30:
+    if people_weight >= 0.25:
         note_parts.append("people_mode")
 
     if technical < 0.20:
