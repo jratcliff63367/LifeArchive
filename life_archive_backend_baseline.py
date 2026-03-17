@@ -2616,39 +2616,88 @@ def _gps_bucket_key_for_cluster(item: dict[str, Any], precision: int = 4) -> tup
         return None
 
 
-def _find_clusters_in_items(items: list[dict[str, Any]], time_threshold_seconds: int = 15) -> list[list[dict[str, Any]]]:
-    bucket_map: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
+
+def _gps_distance_meters(item_a: dict[str, Any], item_b: dict[str, Any]) -> float | None:
+    try:
+        lat1 = float(item_a.get("latitude"))
+        lon1 = float(item_a.get("longitude"))
+        lat2 = float(item_b.get("latitude"))
+        lon2 = float(item_b.get("longitude"))
+    except Exception:
+        return None
+
+    # Equirectangular approximation; accurate enough at short distances.
+    lat1r = math.radians(lat1)
+    lon1r = math.radians(lon1)
+    lat2r = math.radians(lat2)
+    lon2r = math.radians(lon2)
+    x = (lon2r - lon1r) * math.cos((lat1r + lat2r) / 2.0)
+    y = (lat2r - lat1r)
+    return 6371000.0 * math.sqrt(x * x + y * y)
+
+
+def _find_clusters_in_items(
+    items: list[dict[str, Any]],
+    time_threshold_seconds: int = 15,
+    gps_threshold_meters: float = 15.0,
+    bridge_time_seconds: int = 5,
+    bridge_cluster_span_seconds: int = 10,
+) -> list[list[dict[str, Any]]]:
+    # Current design:
+    # 1) Only GPS-tagged photos participate in clustering debug mode.
+    # 2) Sort by time.
+    # 3) Same cluster if time delta <= threshold and distance <= threshold.
+    # 4) Outlier bridge rule: if a photo is only a few seconds away from a very
+    #    short existing cluster, allow one obvious GPS outlier to join.
+    decorated: list[tuple[datetime, dict[str, Any]]] = []
     for item in items:
-        key = _gps_bucket_key_for_cluster(item)
-        if key is None:
+        if _gps_bucket_key_for_cluster(item) is None:
             continue
-        bucket_map[key].append(item)
+        dt = _parse_dt_for_cluster(item.get("final_dt"))
+        if dt is None:
+            continue
+        decorated.append((dt, item))
+
+    if not decorated:
+        return []
+
+    decorated.sort(key=lambda pair: pair[0])
 
     clusters: list[list[dict[str, Any]]] = []
-    for _bucket_key, bucket_items in bucket_map.items():
-        decorated = []
-        for item in bucket_items:
-            dt = _parse_dt_for_cluster(item.get("final_dt"))
-            if dt is None:
-                continue
-            decorated.append((dt, item))
-        if not decorated:
-            continue
-        decorated.sort(key=lambda pair: pair[0])
+    current = [decorated[0][1]]
+    current_start_dt = decorated[0][0]
+    prev_dt = decorated[0][0]
 
-        current = [decorated[0][1]]
-        prev_dt = decorated[0][0]
-        for dt, item in decorated[1:]:
-            delta = (dt - prev_dt).total_seconds()
-            if delta <= time_threshold_seconds:
-                current.append(item)
-            else:
-                if len(current) >= 2:
-                    clusters.append(current)
-                current = [item]
-            prev_dt = dt
-        if len(current) >= 2:
-            clusters.append(current)
+    for dt, item in decorated[1:]:
+        prev_item = current[-1]
+        delta = (dt - prev_dt).total_seconds()
+        dist_m = _gps_distance_meters(prev_item, item)
+
+        same_time = delta <= time_threshold_seconds
+        same_place = (dist_m is not None and dist_m <= gps_threshold_meters)
+
+        # GPS outlier bridge:
+        # If we already have a tiny valid short-time run, allow one near-adjacent
+        # outlier frame to join even when its GPS is bad.
+        cluster_span = (prev_dt - current_start_dt).total_seconds()
+        bridge_ok = (
+            len(current) >= 2
+            and delta <= bridge_time_seconds
+            and cluster_span <= bridge_cluster_span_seconds
+        )
+
+        if same_time and (same_place or bridge_ok):
+            current.append(item)
+        else:
+            if len(current) >= 2:
+                clusters.append(current)
+            current = [item]
+            current_start_dt = dt
+
+        prev_dt = dt
+
+    if len(current) >= 2:
+        clusters.append(current)
 
     return clusters
 
