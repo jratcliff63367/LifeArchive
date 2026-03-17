@@ -51,7 +51,7 @@ DEST_ROOT = r"C:\website-photos"
 # Mode:
 #   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally
 #   "rebuild" = scan files already under DEST_ROOT, do not copy, rebuild/update metadata in place
-MODE = "rebuild"   # "ingest" or "rebuild"
+MODE = "ingest"   # "ingest" or "rebuild"
 
 # Rebuild options (used only when MODE == "rebuild")
 # If True, delete and fully rebuild the SQLite database from files already inside DEST_ROOT.
@@ -123,6 +123,16 @@ def compute_sha1(path: str) -> str:
 
 def file_extension(path: str) -> str:
     return os.path.splitext(path)[1].lower()
+
+
+NON_JPEG_IMAGE_EXTENSIONS = {
+    ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff",
+    ".heic", ".heif", ".avif", ".jfif",
+}
+
+
+def is_non_jpeg_image_file(path: str) -> bool:
+    return file_extension(path) in NON_JPEG_IMAGE_EXTENSIONS
 
 
 def should_skip_dir(dirname: str) -> bool:
@@ -633,7 +643,8 @@ def run_ingest():
                     continue
 
                 if file_extension(full_path) not in ALLOWED_EXTENSIONS:
-                    non_jpeg_skipped += 1
+                    if is_non_jpeg_image_file(full_path):
+                        non_jpeg_skipped += 1
                     continue
 
                 if MODE == "ingest":
