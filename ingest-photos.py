@@ -51,7 +51,7 @@ DEST_ROOT = r"C:\website-photos"
 # Mode:
 #   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally
 #   "rebuild" = scan files already under DEST_ROOT, do not copy, rebuild/update metadata in place
-MODE = "ingest"   # "ingest" or "rebuild"
+MODE = "rebuild"   # "ingest" or "rebuild"
 
 # Rebuild options (used only when MODE == "rebuild")
 # If True, delete and fully rebuild the SQLite database from files already inside DEST_ROOT.
@@ -626,6 +626,12 @@ def run_ingest():
                 full_path = os.path.join(root, name)
                 current_file = full_path
 
+                rel_check = os.path.relpath(full_path, DEST_ROOT)
+                parts = Path(rel_check).parts
+
+                if any(p.startswith("_") for p in parts):
+                    continue
+
                 if file_extension(full_path) not in ALLOWED_EXTENSIONS:
                     non_jpeg_skipped += 1
                     continue
@@ -664,9 +670,10 @@ def run_ingest():
 
                     sha1 = compute_sha1(full_path)
 
-                    if sha1 in existing_sha1s:
-                        duplicates_skipped += 1
-                        continue
+                    if MODE == "ingest":
+                        if sha1 in existing_sha1s:
+                            duplicates_skipped += 1
+                            continue
 
                     if MODE == "ingest":
                         ensure_parent_dir(dest_path)
