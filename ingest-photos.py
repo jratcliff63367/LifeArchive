@@ -48,6 +48,17 @@ SOURCE_DIRECTORIES = [
 
 DEST_ROOT = r"C:\website-photos"
 
+# Mode:
+#   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally
+#   "rebuild" = scan files already under DEST_ROOT, do not copy, rebuild/update metadata in place
+MODE = "ingest"   # "ingest" or "rebuild"
+
+# Rebuild options (used only when MODE == "rebuild")
+# If True, delete and fully rebuild the SQLite database from files already inside DEST_ROOT.
+REBUILD_SQLITE = False
+# If True, delete _thumbs and regenerate thumbnails from files already inside DEST_ROOT.
+REBUILD_THUMBNAILS = False
+
 DB_PATH = os.path.join(DEST_ROOT, "archive_index.db")
 THUMB_DIR = os.path.join(DEST_ROOT, "_thumbs")
 
@@ -112,6 +123,20 @@ def compute_sha1(path: str) -> str:
 
 def file_extension(path: str) -> str:
     return os.path.splitext(path)[1].lower()
+
+
+def should_skip_dir(dirname: str) -> bool:
+    return dirname.startswith("_")
+
+
+def rebuild_file_iter(dest_root: str):
+    """
+    In rebuild mode, scan files already under DEST_ROOT.
+    Ignore _thumbs, _trash, and any folder beginning with "_".
+    """
+    for root, dirs, files in os.walk(dest_root):
+        dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+        yield root, dirs, files
 
 
 def safe_datetime_from_timestamp(ts):
@@ -536,9 +561,19 @@ def inspect_file(path: str):
 # ------------------------------------------------------------
 
 def run_ingest():
-    print("--- STARTING ROBUST INGEST (Merged GPS + Checkpoint + Dedup) ---")
+    print(f"--- STARTING ROBUST {MODE.upper()} (Merged GPS + Checkpoint + Dedup) ---")
 
     os.makedirs(DEST_ROOT, exist_ok=True)
+
+    if MODE == "rebuild":
+        print("[Mode] REBUILD MODE ACTIVE")
+        if REBUILD_THUMBNAILS and os.path.exists(THUMB_DIR):
+            print("[Rebuild] Deleting thumbnails directory")
+            shutil.rmtree(THUMB_DIR, ignore_errors=True)
+        if REBUILD_SQLITE and os.path.exists(DB_PATH):
+            print("[Rebuild] Deleting existing SQLite database")
+            os.remove(DB_PATH)
+
     os.makedirs(THUMB_DIR, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
@@ -561,13 +596,25 @@ def run_ingest():
     since_commit = 0
     current_file = ""
 
-    for source_root in SOURCE_DIRECTORIES:
-        source_root = os.path.normpath(source_root)
-        source_base = os.path.basename(source_root.rstrip("\\/"))
+    if MODE == "ingest":
+        scan_roots = SOURCE_DIRECTORIES
+    elif MODE == "rebuild":
+        scan_roots = [DEST_ROOT]
+    else:
+        raise ValueError(f"Invalid MODE: {MODE}")
 
-        print(f"[Source] Scanning: {source_root}")
+    for scan_root in scan_roots:
+        scan_root = os.path.normpath(scan_root)
+        source_base = os.path.basename(scan_root.rstrip("\\/"))
 
-        for root, dirs, files in os.walk(source_root):
+        print(f"[Source] Scanning: {scan_root}")
+
+        walker = rebuild_file_iter(scan_root) if MODE == "rebuild" else os.walk(scan_root)
+
+        for root, dirs, files in walker:
+            if MODE == "ingest":
+                dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+
             dirs_walked += 1
             if DIRECTORY_LOG_INTERVAL and dirs_walked % DIRECTORY_LOG_INTERVAL == 0:
                 print(f"[Scan] dirs_walked={dirs_walked:,} examined={examined:,} current_dir={root}")
@@ -579,18 +626,28 @@ def run_ingest():
                 full_path = os.path.join(root, name)
                 current_file = full_path
 
-                # JPEG-only filter.
                 if file_extension(full_path) not in ALLOWED_EXTENSIONS:
                     non_jpeg_skipped += 1
                     continue
 
-                rel_dir = os.path.relpath(root, source_root)
-                if rel_dir == ".":
-                    rel_dir = ""
-
-                archive_rel_path = os.path.join(source_base, rel_dir) if rel_dir else source_base
-                rel_fqn = os.path.join(source_base, rel_dir, name) if rel_dir else os.path.join(source_base, name)
-                dest_path = os.path.join(DEST_ROOT, rel_fqn)
+                if MODE == "ingest":
+                    rel_dir = os.path.relpath(root, scan_root)
+                    if rel_dir == ".":
+                        rel_dir = ""
+                    archive_rel_path = os.path.join(source_base, rel_dir) if rel_dir else source_base
+                    rel_fqn = os.path.join(source_base, rel_dir, name) if rel_dir else os.path.join(source_base, name)
+                    dest_path = os.path.join(DEST_ROOT, rel_fqn)
+                    path_tags = make_path_tags(source_base, rel_dir)
+                else:
+                    rel_fqn = os.path.relpath(full_path, DEST_ROOT)
+                    archive_rel_path = os.path.dirname(rel_fqn)
+                    dest_path = full_path
+                    rel_parts = Path(rel_fqn).parts
+                    path_tags = ", ".join(
+                        p.replace("_", " ").replace("-", " ")
+                        for p in rel_parts[:-1]
+                        if p and not p.startswith("_")
+                    )
 
                 try:
                     dt_string, source_label, pillow_meta = resolve_file_date(full_path, archive_rel_path)
@@ -607,19 +664,17 @@ def run_ingest():
 
                     sha1 = compute_sha1(full_path)
 
-                    # Exact duplicate skipping is critical and global across the archive.
                     if sha1 in existing_sha1s:
                         duplicates_skipped += 1
                         continue
 
-                    path_tags = make_path_tags(source_base, rel_dir)
-
-                    ensure_parent_dir(dest_path)
-                    if not os.path.exists(dest_path):
-                        shutil.copy2(full_path, dest_path)
-                        new_added += 1
-                    else:
-                        healed += 1
+                    if MODE == "ingest":
+                        ensure_parent_dir(dest_path)
+                        if not os.path.exists(dest_path):
+                            shutil.copy2(full_path, dest_path)
+                            new_added += 1
+                        else:
+                            healed += 1
 
                     stat = os.stat(dest_path)
 
@@ -690,6 +745,10 @@ def run_ingest():
     print(f"Tiny images skipped: {tiny:,}")
     print(f"Unreadable images skipped: {unreadable:,}")
     print(f"Warnings: {warnings:,}")
+    print(f"Mode: {MODE}")
+    if MODE == "rebuild":
+        print(f"Rebuild SQLite: {REBUILD_SQLITE}")
+        print(f"Rebuild Thumbnails: {REBUILD_THUMBNAILS}")
 
 
 if __name__ == "__main__":
