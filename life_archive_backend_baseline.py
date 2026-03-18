@@ -88,6 +88,7 @@ STASH_CATEGORIES = [
     {"key": "game-art", "label": "Old Game Art", "dir": "_stash/game-art"},
     {"key": "screenshots", "label": "Screenshots", "dir": "_stash/screenshots"},
     {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
+    {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
