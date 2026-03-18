@@ -16,7 +16,7 @@ from typing import Any
 
 EPSILON_GPS = 0.000001
 DEFAULT_ARCHIVE_ROOT = r"C:\website-photos"
-DEFAULT_LOOKUP_LIMIT = 2500  # conservative first-run safety limit
+DEFAULT_LOOKUP_LIMIT = 10  # conservative first-run safety limit
 DEFAULT_ROUND_DECIMALS = 3
 DEFAULT_REQUEST_DELAY_SECONDS = 1.1
 OPENCAGE_URL = "https://api.opencagedata.com/geocode/v1/json"
@@ -188,6 +188,24 @@ def rounded_coord_key(lat: float, lon: float, decimals: int) -> tuple[str, float
     return (f"{lat_r:.{decimals}f},{lon_r:.{decimals}f}", lat_r, lon_r)
 
 
+def _sqlite_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, list):
+        if not value:
+            return ""
+        if all(isinstance(x, (str, int, float, bool)) or x is None for x in value):
+            return ", ".join("" if x is None else str(x) for x in value)
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def load_photos_with_gps(archive_conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = archive_conn.execute(
         """
@@ -251,23 +269,30 @@ def parse_best_result(payload: dict[str, Any]) -> dict[str, Any]:
     annotations = best.get("annotations") or {}
 
     return {
-        "confidence": best.get("confidence"),
-        "formatted": best.get("formatted") or "",
-        "result_type": best.get("_type") or best.get("type") or "",
-        "country": components.get("country") or "",
-        "country_code": components.get("country_code") or "",
-        "state": components.get("state") or "",
-        "state_code": components.get("state_code") or components.get("ISO_3166-2") or "",
-        "county": components.get("county") or "",
-        "city": components.get("city") or components.get("city_district") or "",
-        "town": components.get("town") or "",
-        "village": components.get("village") or "",
-        "hamlet": components.get("hamlet") or "",
-        "suburb": components.get("suburb") or components.get("neighbourhood") or "",
-        "postcode": components.get("postcode") or "",
-        "road": components.get("road") or "",
-        "house_number": components.get("house_number") or "",
-        "place_name": components.get("attraction") or components.get("building") or components.get("amenity") or components.get("park") or components.get("natural") or "",
+        "confidence": _sqlite_scalar(best.get("confidence")),
+        "formatted": _sqlite_scalar(best.get("formatted") or ""),
+        "result_type": _sqlite_scalar(best.get("_type") or best.get("type") or ""),
+        "country": _sqlite_scalar(components.get("country") or ""),
+        "country_code": _sqlite_scalar(components.get("country_code") or ""),
+        "state": _sqlite_scalar(components.get("state") or ""),
+        "state_code": _sqlite_scalar(components.get("state_code") or components.get("ISO_3166-2") or ""),
+        "county": _sqlite_scalar(components.get("county") or ""),
+        "city": _sqlite_scalar(components.get("city") or components.get("city_district") or ""),
+        "town": _sqlite_scalar(components.get("town") or ""),
+        "village": _sqlite_scalar(components.get("village") or ""),
+        "hamlet": _sqlite_scalar(components.get("hamlet") or ""),
+        "suburb": _sqlite_scalar(components.get("suburb") or components.get("neighbourhood") or ""),
+        "postcode": _sqlite_scalar(components.get("postcode") or ""),
+        "road": _sqlite_scalar(components.get("road") or ""),
+        "house_number": _sqlite_scalar(components.get("house_number") or ""),
+        "place_name": _sqlite_scalar(
+            components.get("attraction")
+            or components.get("building")
+            or components.get("amenity")
+            or components.get("park")
+            or components.get("natural")
+            or ""
+        ),
         "components_json": json.dumps(components, ensure_ascii=False),
         "annotations_json": json.dumps(annotations, ensure_ascii=False),
         "results_count": len(results),
