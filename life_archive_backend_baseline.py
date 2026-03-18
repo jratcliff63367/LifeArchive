@@ -33,12 +33,16 @@ from __future__ import annotations
 import argparse
 import calendar
 import hashlib
+import json
 import logging
 import math
 import os
 import re
 import shutil
 import sqlite3
+import threading
+import time
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -78,6 +82,14 @@ TAG_EXCLUSIONS = {
     "terrysbackup",
     "topaz-undated",
 }
+
+STASH_CATEGORIES = [
+    {"key": "general", "label": "General", "dir": "_stash"},
+    {"key": "game-art", "label": "Old Game Art", "dir": "_stash/game-art"},
+    {"key": "screenshots", "label": "Screenshots", "dir": "_stash/screenshots"},
+    {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
+]
+STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -442,20 +454,143 @@ HTML_TEMPLATE = r"""
             background: #222;
             border: 1px solid #444;
             z-index: 100000;
-            width: 220px;
+            min-width: 250px;
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            padding: 6px 0;
         }
         .menu-item {
+            position: relative;
             padding: 12px 20px;
             cursor: pointer;
             font-size: 0.9em;
             font-weight: 700;
             transition: 0.1s;
+            white-space: nowrap;
         }
         .menu-item:hover {
             background: var(--accent);
             color: #000;
+        }
+        .menu-item.hidden {
+            display: none;
+        }
+        .menu-arrow {
+            float: right;
+            opacity: 0.8;
+        }
+        .submenu {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 100%;
+            min-width: 220px;
+            background: #222;
+            border: 1px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            padding: 6px 0;
+        }
+        .menu-item.has-submenu:hover > .submenu {
+            display: block;
+        }
+        .selection-menu-wrap {
+            position: relative;
+            display: inline-flex;
+        }
+        .selection-pop-menu {
+            display: none;
+            position: absolute;
+            right: 0;
+            bottom: calc(100% + 8px);
+            min-width: 220px;
+            background: rgba(20, 20, 20, 0.98);
+            border: 1px solid #444;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            padding: 6px 0;
+            z-index: 10005;
+        }
+        .selection-pop-menu.open {
+            display: block;
+        }
+        .selection-pop-menu .menu-item {
+            padding: 10px 14px;
+        }
+        .progress-dialog {
+            position: fixed;
+            right: 20px;
+            bottom: 96px;
+            width: 380px;
+            background: rgba(20, 20, 20, 0.98);
+            border: 1px solid #444;
+            border-radius: 14px;
+            box-shadow: 0 18px 46px rgba(0, 0, 0, 0.55);
+            z-index: 10008;
+            padding: 16px;
+            display: none;
+        }
+        .progress-dialog.visible {
+            display: block;
+        }
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .progress-title {
+            font-size: 0.95em;
+            font-weight: 900;
+            color: #fff;
+            margin: 0;
+        }
+        .progress-close {
+            background: transparent;
+            border: 0;
+            color: #aaa;
+            font-size: 22px;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .progress-close:hover {
+            color: var(--accent);
+        }
+        .progress-subtitle {
+            color: #cfcfcf;
+            font-size: 0.85em;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .progress-status {
+            color: #999;
+            font-size: 0.82em;
+            min-height: 1.3em;
+            margin-bottom: 12px;
+        }
+        .progress-bar-shell {
+            width: 100%;
+            height: 12px;
+            border-radius: 999px;
+            background: #101010;
+            border: 1px solid #333;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent), #ffffff);
+            transition: width 0.2s ease;
+        }
+        .progress-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: #bbb;
+            font-size: 0.78em;
+            font-weight: 800;
         }
 
         .page-actions {
@@ -647,14 +782,25 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
-        <div class="menu-item" onclick="showClusters()">Show Clusters</div>
-        <div class="menu-item" onclick="selectByFormula('interesting', 1)">Select Most Interesting Picture</div>
-        <div class="menu-item" onclick="selectByFormula('cull', 1)">Select Best Picture for Culling</div>
-        <div class="menu-item" onclick="selectByFormula('cull', 2)">Select Best Two Pictures for Culling</div>
-        <div class="menu-item" onclick="rotateImage(90)">Rotate 90° Clockwise ↻</div>
-        <div class="menu-item" onclick="rotateImage(270)">Rotate 90° Counter ↺</div>
-        <div class="menu-item" onclick="moveContextTo('trash')">Move to Trash</div>
-        <div class="menu-item" onclick="moveContextTo('stash')">Move to Stash</div>
+        <div class="menu-item" data-role="cull" onclick="startCullFromContext()">Cull</div>
+        <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
+        <div class="menu-item has-submenu" data-role="stash">Stash <span class="menu-arrow">▸</span>
+            <div class="submenu">
+                {% for stash in stash_categories %}
+                <div class="menu-item" onclick="moveContextToStash('{{ stash.key }}')">{{ stash.label }}</div>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="menu-item hidden" data-role="rotate-cw" onclick="rotateImage(90)">Rotate 90° Clockwise ↻</div>
+        <div class="menu-item hidden" data-role="rotate-ccw" onclick="rotateImage(270)">Rotate 90° Counter ↺</div>
+        <div class="menu-item has-submenu hidden" data-role="debug">Debug <span class="menu-arrow">▸</span>
+            <div class="submenu">
+                <div class="menu-item" onclick="showClusters()">Show Clusters</div>
+                <div class="menu-item" onclick="selectByFormula('interesting', 1)">Select Most Interesting Picture</div>
+                <div class="menu-item" onclick="selectByFormula('cull', 1)">Select Best Picture for Culling</div>
+                <div class="menu-item" onclick="selectByFormula('cull', 2)">Select Best Two Pictures for Culling</div>
+            </div>
+        </div>
     </div>
 
     <div class="nav-bar">
@@ -726,7 +872,7 @@ HTML_TEMPLATE = r"""
         {% if cards %}
         <div class="grid" style="margin-bottom: 50px;">
             {% for c in cards %}
-            <div class="card" onclick="handleGridClick(event, '{{ c.id }}')">
+            <div class="card" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
                 <div class="hero-preview">
                     {% if c.comp_hash %}
                     <img src="/composite/{{ c.comp_hash }}.jpg" loading="lazy">
@@ -775,10 +921,34 @@ HTML_TEMPLATE = r"""
     <div id="selection-bar" class="selection-bar">
         <span id="selection-count">0 selected</span>
         <button type="button" onclick="selectAllVisible()">Select All</button>
+        <button type="button" onclick="startCullSelection()">Cull</button>
         <button type="button" onclick="rotateSelection(90)">Rotate 90° Clockwise ↻</button>
         <button type="button" onclick="rotateSelection(270)">Rotate 90° Counter ↺</button>
         <button type="button" onclick="moveCurrentSelectionTo('trash')">Move to Trash</button>
-        <button type="button" onclick="moveCurrentSelectionTo('stash')">Move to Stash</button>
+        <div class="selection-menu-wrap">
+            <button type="button" onclick="toggleSelectionStashMenu(event)">Stash ▾</button>
+            <div id="selection-stash-menu" class="selection-pop-menu">
+                {% for stash in stash_categories %}
+                <div class="menu-item" onclick="moveCurrentSelectionToStash('{{ stash.key }}')">{{ stash.label }}</div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div id="progress-dialog" class="progress-dialog">
+        <div class="progress-header">
+            <h3 id="progress-title" class="progress-title">Working…</h3>
+            <button type="button" class="progress-close" onclick="closeProgressDialog()">×</button>
+        </div>
+        <div id="progress-subtitle" class="progress-subtitle">Preparing operation…</div>
+        <div id="progress-status" class="progress-status"></div>
+        <div class="progress-bar-shell">
+            <div id="progress-bar-fill" class="progress-bar-fill"></div>
+        </div>
+        <div class="progress-meta">
+            <span id="progress-counts">0 / 0</span>
+            <span id="progress-phase">queued</span>
+        </div>
     </div>
 
     <div id="lightbox" onclick="if(event.target===this) closeLB()">
@@ -849,13 +1019,161 @@ HTML_TEMPLATE = r"""
 
     <script>
         const manifests = {{ manifests | tojson | safe }};
+        const cardScopes = {{ card_scopes | tojson | safe }};
+        const stashCategories = {{ stash_categories | tojson | safe }};
         let curM = null;
         let curI = 0;
         let menuSha1 = '';
+        let menuContext = { kind: 'photo', cardId: null };
         let selectedSha1s = new Set();
         let currentMeta = null;
         let currentTab = 'overview';
         let showFaceOverlay = false;
+        let activeJobId = null;
+        let activeJobPollTimer = null;
+
+        function hideContextMenu() {
+            const menu = document.getElementById('context-menu');
+            if (menu) menu.style.display = 'none';
+        }
+
+        function hideSelectionStashMenu() {
+            const menu = document.getElementById('selection-stash-menu');
+            if (menu) menu.classList.remove('open');
+        }
+
+        function getStashCategoryDir(categoryKey) {
+            const item = stashCategories.find(entry => entry.key === categoryKey);
+            return item ? item.dir : '_stash';
+        }
+
+        function getExplicitContextTargets() {
+            if (menuContext.kind === 'hero' && menuContext.cardId && cardScopes[menuContext.cardId]) {
+                return Array.from(cardScopes[menuContext.cardId]);
+            }
+            return null;
+        }
+
+        function configureContextMenuFor(kind) {
+            const menu = document.getElementById('context-menu');
+            if (!menu) return;
+            const photoOnly = ['rotate-cw', 'rotate-ccw', 'debug'];
+            photoOnly.forEach(role => {
+                const el = menu.querySelector(`[data-role="${role}"]`);
+                if (!el) return;
+                el.classList.toggle('hidden', kind !== 'photo');
+            });
+        }
+
+        function getJobPhaseLabel(status) {
+            if (!status) return 'queued';
+            return String(status).toLowerCase();
+        }
+
+        function closeProgressDialog() {
+            const dialog = document.getElementById('progress-dialog');
+            if (dialog) dialog.classList.remove('visible');
+            if (activeJobPollTimer) {
+                clearTimeout(activeJobPollTimer);
+                activeJobPollTimer = null;
+            }
+            activeJobId = null;
+        }
+
+        function updateProgressDialog(data) {
+            const dialog = document.getElementById('progress-dialog');
+            if (!dialog) return;
+            dialog.classList.add('visible');
+            const title = document.getElementById('progress-title');
+            const subtitle = document.getElementById('progress-subtitle');
+            const status = document.getElementById('progress-status');
+            const counts = document.getElementById('progress-counts');
+            const phase = document.getElementById('progress-phase');
+            const barFill = document.getElementById('progress-bar-fill');
+            if (title) title.textContent = data.title || 'Working…';
+            if (subtitle) subtitle.textContent = data.subtitle || '';
+            if (status) status.textContent = data.detail || data.message || '';
+            const completed = Number(data.completed || 0);
+            const total = Number(data.total || 0);
+            const percent = total > 0 ? Math.max(0, Math.min(100, (completed / total) * 100)) : (data.status === 'completed' ? 100 : 0);
+            if (barFill) barFill.style.width = `${percent}%`;
+            if (counts) counts.textContent = total > 0 ? `${completed} / ${total}` : `${completed}`;
+            if (phase) phase.textContent = getJobPhaseLabel(data.status);
+        }
+
+        async function pollJob(jobId) {
+            if (!jobId) return;
+            try {
+                const resp = await fetch('/api/job_status/' + encodeURIComponent(jobId));
+                const data = await resp.json();
+                if (!resp.ok || data.status === 'missing') {
+                    throw new Error(data.message || 'Job not found');
+                }
+                updateProgressDialog(data);
+                if (data.status === 'completed') {
+                    activeJobId = null;
+                    activeJobPollTimer = null;
+                    setTimeout(() => location.reload(), 700);
+                    return;
+                }
+                if (data.status === 'error') {
+                    activeJobId = null;
+                    activeJobPollTimer = null;
+                    return;
+                }
+                activeJobPollTimer = setTimeout(() => pollJob(jobId), 400);
+            } catch (err) {
+                console.error(err);
+                updateProgressDialog({
+                    title: 'Operation Failed',
+                    subtitle: '',
+                    detail: String(err),
+                    completed: 0,
+                    total: 0,
+                    status: 'error',
+                });
+                activeJobId = null;
+                activeJobPollTimer = null;
+            }
+        }
+
+        async function startBackgroundOperation(payload) {
+            hideContextMenu();
+            hideSelectionStashMenu();
+            if (!payload || !payload.sha1_list || payload.sha1_list.length === 0) return;
+            updateProgressDialog({
+                title: payload.title || 'Working…',
+                subtitle: payload.subtitle || '',
+                detail: 'Queued…',
+                completed: 0,
+                total: payload.sha1_list.length,
+                status: 'queued',
+            });
+            try {
+                const resp = await fetch('/api/start_operation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== 'ok') {
+                    throw new Error(data.message || 'Failed to start operation');
+                }
+                activeJobId = data.job_id;
+                if (activeJobPollTimer) clearTimeout(activeJobPollTimer);
+                pollJob(activeJobId);
+            } catch (err) {
+                console.error(err);
+                updateProgressDialog({
+                    title: payload.title || 'Operation Failed',
+                    subtitle: payload.subtitle || '',
+                    detail: String(err),
+                    completed: 0,
+                    total: 0,
+                    status: 'error',
+                });
+            }
+        }
 
         function renderKV(containerId, rows) {
             const el = document.getElementById(containerId);
@@ -1270,10 +1588,14 @@ HTML_TEMPLATE = r"""
         }
 
         function getContextTargets(clickedSha1) {
+            const explicit = getExplicitContextTargets();
+            if (explicit && explicit.length > 0) {
+                return explicit;
+            }
             if (selectedSha1s.size > 1 && selectedSha1s.has(clickedSha1)) {
                 return Array.from(selectedSha1s);
             }
-            return [clickedSha1];
+            return clickedSha1 ? [clickedSha1] : [];
         }
 
         async function selectByFormula(mode, keepCount) {
@@ -1414,13 +1736,27 @@ HTML_TEMPLATE = r"""
         }
 
 
-        function handleCtx(e, sha1) {
+        function openContextMenuAt(e, kind) {
             e.preventDefault();
-            menuSha1 = sha1;
+            e.stopPropagation();
+            hideSelectionStashMenu();
+            configureContextMenuFor(kind);
             const menu = document.getElementById('context-menu');
             menu.style.display = 'block';
             menu.style.left = e.clientX + 'px';
             menu.style.top = e.clientY + 'px';
+        }
+
+        function handleCtx(e, sha1) {
+            menuSha1 = sha1;
+            menuContext = { kind: 'photo', cardId: null };
+            openContextMenuAt(e, 'photo');
+        }
+
+        function handleHeroCtx(e, cardId) {
+            menuSha1 = '';
+            menuContext = { kind: 'hero', cardId };
+            openContextMenuAt(e, 'hero');
         }
 
         function handleCtxFromLightbox(e) {
@@ -1478,33 +1814,71 @@ HTML_TEMPLATE = r"""
             });
         }
 
-        function moveSha1List(target, sha1List) {
+        function moveSha1List(target, sha1List, options = {}) {
             if (!sha1List || sha1List.length === 0) return;
-            const endpoint = target === 'trash' ? '/api/move_to_trash' : '/api/move_to_stash';
-            const label = target === 'trash' ? 'trash' : 'stash';
-
-            fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sha1_list: sha1List })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'ok') {
-                    location.reload();
-                } else {
-                    alert(data.message || `Failed to move image(s) to ${label}.`);
-                }
-            });
+            const title = options.title || (target === 'trash' ? 'Moving to Trash' : 'Moving to Stash');
+            const subtitle = options.subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`;
+            const payload = {
+                operation: 'move',
+                target_dir: target,
+                sha1_list: sha1List,
+                title,
+                subtitle,
+            };
+            startBackgroundOperation(payload);
         }
 
         function moveCurrentSelectionTo(target) {
             moveSha1List(target, Array.from(selectedSha1s));
         }
 
+        function moveCurrentSelectionToStash(categoryKey) {
+            hideSelectionStashMenu();
+            moveSha1List(getStashCategoryDir(categoryKey), Array.from(selectedSha1s), {
+                title: 'Moving to Stash',
+                subtitle: categoryKey === 'general' ? 'General' : stashCategories.find(x => x.key === categoryKey)?.label || 'Stash',
+            });
+        }
+
         function moveContextTo(target) {
             const sha1List = getContextTargets(menuSha1);
             moveSha1List(target, sha1List);
+        }
+
+        function moveContextToStash(categoryKey) {
+            const sha1List = getContextTargets(menuSha1);
+            moveSha1List(getStashCategoryDir(categoryKey), sha1List, {
+                title: 'Moving to Stash',
+                subtitle: stashCategories.find(x => x.key === categoryKey)?.label || 'Stash',
+            });
+        }
+
+        function startCullForShaList(sha1List, subtitle) {
+            if (!sha1List || sha1List.length === 0) return;
+            startBackgroundOperation({
+                operation: 'cull',
+                sha1_list: sha1List,
+                title: 'Culling Photos',
+                subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
+            });
+        }
+
+        function startCullFromContext() {
+            const sha1List = getContextTargets(menuSha1);
+            const subtitle = menuContext.kind === 'hero' ? 'Current card scope' : `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`;
+            startCullForShaList(sha1List, subtitle);
+        }
+
+        function startCullSelection() {
+            startCullForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
+        }
+
+        function toggleSelectionStashMenu(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const menu = document.getElementById('selection-stash-menu');
+            if (!menu) return;
+            menu.classList.toggle('open');
         }
 
         function emptyTrash() {
@@ -1525,7 +1899,15 @@ HTML_TEMPLATE = r"""
         }
 
         window.onclick = (e) => {
-            document.getElementById('context-menu').style.display = 'none';
+            const ctx = document.getElementById('context-menu');
+            if (ctx && !ctx.contains(e.target)) {
+                hideContextMenu();
+            }
+            const stashMenu = document.getElementById('selection-stash-menu');
+            const stashWrap = e.target.closest ? e.target.closest('.selection-menu-wrap') : null;
+            if (stashMenu && !stashWrap) {
+                hideSelectionStashMenu();
+            }
         };
 
         document.onkeydown = (e) => {
@@ -2577,53 +2959,6 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
             # Favor slight asymmetry, but do not reward extreme distortion.
             asymmetry_bonus = _clamp01(avg_asym / 0.16) * 0.05
 
-    # Visibility / usability penalty:
-    # If the faces are big enough that humans would expect a readable expression,
-    # but the expression signal remains weak, that often means the face is
-    # obstructed, turned away, or otherwise unusable. This targets the
-    # "activity shot with blocked face beats clear face" failure mode.
-    faces_meta = meta.get("faces") or {}
-    face_summary = faces_meta.get("summary") or {}
-    face_boxes = faces_meta.get("boxes") or []
-    if not isinstance(face_boxes, list):
-        face_boxes = []
-
-    area_ratios = []
-    for box in face_boxes:
-        if not isinstance(box, dict):
-            continue
-        ratio = _safe_float(box.get("area_ratio"), 0.0)
-        if ratio > 0:
-            area_ratios.append(ratio)
-    area_ratios.sort(reverse=True)
-
-    face_count = int(face_summary.get("face_count") or 0)
-    if face_count <= 0 and area_ratios:
-        face_count = len(area_ratios)
-
-    largest_ratio = area_ratios[0] if area_ratios else _safe_float(face_summary.get("largest_face_area_ratio"), 0.0)
-    second_ratio = area_ratios[1] if len(area_ratios) > 1 else 0.0
-    top2_total = largest_ratio + second_ratio
-
-    subjectness = _face_subjectness_from_meta(meta)
-    readable_face_expectation = (
-        _smoothstep(0.010, 0.028, largest_ratio) * 0.55 +
-        _smoothstep(0.014, 0.040, top2_total) * 0.30 +
-        _smoothstep(1.0, 2.0, float(face_count)) * 0.15
-    ) * subjectness
-
-    weak_group_expr = 1.0 - _smoothstep(0.52, 0.72, avg_top2)
-    weak_best_expr = 1.0 - _smoothstep(0.58, 0.78, best_face)
-
-    visibility_penalty = readable_face_expectation * (
-        weak_group_expr * 0.75 +
-        weak_best_expr * 0.25
-    ) * 0.24
-
-    # Do not punish genuinely tiny background faces.
-    if largest_ratio < 0.008 and top2_total < 0.012:
-        visibility_penalty = 0.0
-
     signal = (
         coherence_expr * 0.62 +
         best_face * 0.10 +
@@ -2633,8 +2968,8 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
         consistency_bonus * 0.05 +
         asymmetry_bonus
     )
-    signal -= visibility_penalty
     return _clamp01(signal)
+
 
 def _people_weight_from_meta(meta: dict[str, Any]) -> float:
     faces_meta = meta.get("faces") or {}
@@ -3045,11 +3380,59 @@ def _find_clusters_in_items(
 def create_app(config: ArchiveConfig) -> Flask:
     app = Flask(__name__)
     store = ArchiveStore(config)
+    job_lock = threading.Lock()
+    jobs: dict[str, dict[str, Any]] = {}
+
+    def create_job(title: str, subtitle: str = '', total: int = 0) -> str:
+        job_id = uuid.uuid4().hex
+        with job_lock:
+            jobs[job_id] = {
+                'job_id': job_id,
+                'title': title,
+                'subtitle': subtitle,
+                'detail': '',
+                'status': 'queued',
+                'completed': 0,
+                'total': total,
+                'created_at': time.time(),
+                'finished_at': None,
+                'result': {},
+            }
+        return job_id
+
+    def update_job(job_id: str, **fields: Any) -> None:
+        with job_lock:
+            if job_id not in jobs:
+                return
+            jobs[job_id].update(fields)
+
+    def get_job(job_id: str) -> dict[str, Any] | None:
+        with job_lock:
+            job = jobs.get(job_id)
+            return dict(job) if job else None
+
+    def job_progress(job_id: str, completed: int | None = None, total: int | None = None, detail: str | None = None, subtitle: str | None = None) -> None:
+        payload: dict[str, Any] = {}
+        if completed is not None:
+            payload['completed'] = completed
+        if total is not None:
+            payload['total'] = total
+        if detail is not None:
+            payload['detail'] = detail
+        if subtitle is not None:
+            payload['subtitle'] = subtitle
+        if payload:
+            update_job(job_id, **payload)
+
+    def finalize_job(job_id: str, status: str, result: dict[str, Any] | None = None, detail: str = '') -> None:
+        update_job(job_id, status=status, result=result or {}, detail=detail, finished_at=time.time())
 
     def render_page(**kwargs: Any) -> str:
         kwargs.setdefault('manifests', {})
         kwargs.setdefault('action_links', None)
         kwargs.setdefault('day_calendar', None)
+        kwargs.setdefault('card_scopes', {})
+        kwargs.setdefault('stash_categories', STASH_CATEGORIES)
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
     @app.route("/media/<path:relative_path>")
@@ -3083,12 +3466,20 @@ def create_app(config: ArchiveConfig) -> Flask:
         parent = Path(base_dir_name) / rel_path.parent
         return parent / f"{stem}__{sha1[:8]}{suffix}"
 
-    def move_media_records(sha1_list: list[str], target_dir_name: str) -> tuple[bool, str | None]:
+    def move_media_records(
+        sha1_list: list[str],
+        target_dir_name: str,
+        progress_callback: Any | None = None,
+    ) -> tuple[bool, str | None, dict[str, Any]]:
         if not sha1_list:
-            return False, "sha1_list required"
+            return False, "sha1_list required", {}
 
         target_dir = config.archive_root / target_dir_name
         target_dir.mkdir(parents=True, exist_ok=True)
+
+        moved_count = 0
+        skipped_count = 0
+        total = len(sha1_list)
 
         with sqlite3.connect(config.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -3098,31 +3489,105 @@ def create_app(config: ArchiveConfig) -> Flask:
             ).fetchall()
 
             found = {str(r["sha1"]): r for r in rows}
-            for sha1 in sha1_list:
-                if str(sha1) not in found:
+            for idx, sha1 in enumerate(sha1_list, start=1):
+                sha1 = str(sha1)
+                if progress_callback:
+                    progress_callback(idx - 1, total, f"Processing {idx} of {total}…")
+                if sha1 not in found:
+                    skipped_count += 1
                     continue
-                row = found[str(sha1)]
+                row = found[sha1]
                 old_rel = str(row["rel_fqn"]).replace("\\", "/")
-                if old_rel.startswith("_trash/") or old_rel.startswith("_stash/"):
+                if old_rel.startswith("_trash/") or old_rel.startswith("_stash/") or old_rel.startswith("_cull/"):
+                    skipped_count += 1
                     continue
 
                 old_full = config.archive_root / old_rel
                 if not old_full.exists():
+                    skipped_count += 1
                     continue
 
-                new_rel_path = safe_destination_relative(target_dir_name, old_rel, str(sha1))
+                new_rel_path = safe_destination_relative(target_dir_name, old_rel, sha1)
                 new_full = config.archive_root / new_rel_path
                 new_full.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(old_full), str(new_full))
                 conn.execute(
                     "UPDATE media SET rel_fqn=?, is_deleted=1 WHERE sha1=?",
-                    (str(new_rel_path).replace('/', '\\'), str(sha1)),
+                    (str(new_rel_path).replace('/', '\\'), sha1),
                 )
+                moved_count += 1
+                if progress_callback:
+                    progress_callback(idx, total, str(new_rel_path).replace('\\', '/'))
 
             conn.commit()
 
         invalidate_composites()
-        return True, None
+        return True, None, {
+            'requested': total,
+            'moved': moved_count,
+            'skipped': skipped_count,
+            'target_dir': target_dir_name,
+        }
+
+    def perform_cull(sha1_list: list[str], progress_callback: Any | None = None) -> tuple[bool, str | None, dict[str, Any]]:
+        if not sha1_list:
+            return False, "sha1_list required", {}
+
+        store.load_cache()
+        all_items = store.db_cache + store.undated_cache
+        item_map = {str(item.get('sha1')): item for item in all_items}
+        items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
+        if not items:
+            return False, "No matching items found", {}
+
+        if progress_callback:
+            progress_callback(0, 0, "Analyzing clusters…")
+
+        clusters = _find_clusters_in_items(items, time_threshold_seconds=15)
+        losers: list[str] = []
+        cluster_summaries: list[dict[str, Any]] = []
+        for idx, cluster in enumerate(clusters, start=1):
+            cluster_sha1s = [str(item.get('sha1')) for item in cluster]
+            keep_count = 2 if len(cluster) > 4 else 1
+            ranked = _rank_sha1s_for_mode(store, cluster_sha1s, 'cull')
+            keepers = [item['sha1'] for item in ranked[:keep_count]]
+            keeper_set = set(keepers)
+            drop_list = [sha for sha in cluster_sha1s if sha not in keeper_set]
+            losers.extend(drop_list)
+            cluster_summaries.append({
+                'cluster_id': idx,
+                'size': len(cluster),
+                'keep_count': keep_count,
+                'keepers': keepers,
+                'dropped': drop_list,
+            })
+            if progress_callback:
+                progress_callback(idx, len(clusters), f"Cluster {idx} of {len(clusters)} analyzed")
+
+        if not losers:
+            return True, None, {
+                'requested': len(sha1_list),
+                'clusters_found': len(clusters),
+                'moved': 0,
+                'kept': len(sha1_list),
+                'clusters': cluster_summaries,
+            }
+
+        def move_progress(done: int, total: int, detail: str) -> None:
+            if progress_callback:
+                progress_callback(done, total, detail)
+
+        ok, message, move_summary = move_media_records(losers, '_cull', progress_callback=move_progress)
+        if not ok:
+            return False, message, {}
+
+        return True, None, {
+            'requested': len(sha1_list),
+            'clusters_found': len(clusters),
+            'moved': move_summary.get('moved', 0),
+            'kept': len(sha1_list) - move_summary.get('moved', 0),
+            'clusters': cluster_summaries,
+        }
 
     def empty_trash_impl() -> tuple[bool, str | None]:
         trash_root = config.archive_root / "_trash"
@@ -3211,13 +3676,62 @@ def create_app(config: ArchiveConfig) -> Flask:
 
         return jsonify({"status": "ok", "results": results})
 
+    @app.route("/api/start_operation", methods=["POST"])
+    def start_operation():
+        payload = request.json or {}
+        operation = str(payload.get('operation') or '').strip().lower()
+        sha1_list = [str(x) for x in (payload.get('sha1_list') or []) if str(x)]
+        title = str(payload.get('title') or 'Working…')
+        subtitle = str(payload.get('subtitle') or '')
+        target_dir = str(payload.get('target_dir') or '')
+
+        if operation not in {'move', 'cull'}:
+            return jsonify({'status': 'error', 'message': 'invalid operation'}), 400
+        if not sha1_list:
+            return jsonify({'status': 'error', 'message': 'sha1_list required'}), 400
+        if operation == 'move' and not target_dir:
+            return jsonify({'status': 'error', 'message': 'target_dir required'}), 400
+
+        job_id = create_job(title=title, subtitle=subtitle, total=len(sha1_list))
+
+        def worker() -> None:
+            try:
+                update_job(job_id, status='running')
+                if operation == 'move':
+                    ok, message, result = move_media_records(
+                        sha1_list,
+                        target_dir,
+                        progress_callback=lambda completed, total, detail: job_progress(job_id, completed=completed, total=total, detail=detail),
+                    )
+                else:
+                    ok, message, result = perform_cull(
+                        sha1_list,
+                        progress_callback=lambda completed, total, detail: job_progress(job_id, completed=completed, total=total, detail=detail),
+                    )
+                if ok:
+                    finalize_job(job_id, 'completed', result=result, detail='Operation completed successfully.')
+                else:
+                    finalize_job(job_id, 'error', result=result, detail=message or 'Operation failed.')
+            except Exception as exc:
+                finalize_job(job_id, 'error', detail=str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        return jsonify({'status': 'ok', 'job_id': job_id})
+
+    @app.route("/api/job_status/<job_id>")
+    def job_status(job_id: str):
+        job = get_job(job_id)
+        if not job:
+            return jsonify({'status': 'missing', 'message': 'job not found'}), 404
+        return jsonify(job)
+
     @app.route("/api/move_to_trash", methods=["POST"])
     def move_to_trash():
         payload = request.json or {}
         sha1_list = payload.get("sha1_list") or []
         if not isinstance(sha1_list, list) or not sha1_list:
             return jsonify({"status": "error", "message": "sha1_list required"}), 400
-        ok, message = move_media_records([str(x) for x in sha1_list], "_trash")
+        ok, message, _summary = move_media_records([str(x) for x in sha1_list], "_trash")
         if not ok:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
@@ -3226,9 +3740,10 @@ def create_app(config: ArchiveConfig) -> Flask:
     def move_to_stash():
         payload = request.json or {}
         sha1_list = payload.get("sha1_list") or []
+        target_dir = str(payload.get("target_dir") or "_stash")
         if not isinstance(sha1_list, list) or not sha1_list:
             return jsonify({"status": "error", "message": "sha1_list required"}), 400
-        ok, message = move_media_records([str(x) for x in sha1_list], "_stash")
+        ok, message, _summary = move_media_records([str(x) for x in sha1_list], target_dir)
         if not ok:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
@@ -3240,6 +3755,17 @@ def create_app(config: ArchiveConfig) -> Flask:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
 
+
+    @app.route("/api/cull", methods=["POST"])
+    def cull_now():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        ok, message, summary = perform_cull([str(x) for x in sha1_list])
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 400
+        return jsonify({"status": "ok", "summary": summary})
 
     @app.route("/api/select_by_formula", methods=["POST"])
     def select_by_formula():
@@ -3347,6 +3873,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             breadcrumb="Decades",
             cards=cards,
             manifests=manifests,
+            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
 
     @app.route("/timeline/decade/<decade>")
@@ -3379,6 +3906,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             breadcrumb=f"<a href='/timeline'>Timeline</a> / {decade}",
             cards=cards,
             manifests=manifests,
+            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
 
     @app.route("/timeline/year/<year>")
@@ -3414,6 +3942,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}",
             cards=cards,
             manifests=manifests,
+            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
 
     @app.route("/timeline/month/<year>/<month>")
@@ -3496,6 +4025,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             breadcrumb="Undated",
             cards=cards,
             manifests=manifests,
+            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
 
     @app.route("/undated/<folder>")
@@ -3563,6 +4093,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             cards=cards,
             photos=direct_files,
             manifests=manifests,
+            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
 
     @app.route("/tags")
