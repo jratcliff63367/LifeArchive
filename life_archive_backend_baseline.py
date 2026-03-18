@@ -2577,6 +2577,53 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
             # Favor slight asymmetry, but do not reward extreme distortion.
             asymmetry_bonus = _clamp01(avg_asym / 0.16) * 0.05
 
+    # Visibility / usability penalty:
+    # If the faces are big enough that humans would expect a readable expression,
+    # but the expression signal remains weak, that often means the face is
+    # obstructed, turned away, or otherwise unusable. This targets the
+    # "activity shot with blocked face beats clear face" failure mode.
+    faces_meta = meta.get("faces") or {}
+    face_summary = faces_meta.get("summary") or {}
+    face_boxes = faces_meta.get("boxes") or []
+    if not isinstance(face_boxes, list):
+        face_boxes = []
+
+    area_ratios = []
+    for box in face_boxes:
+        if not isinstance(box, dict):
+            continue
+        ratio = _safe_float(box.get("area_ratio"), 0.0)
+        if ratio > 0:
+            area_ratios.append(ratio)
+    area_ratios.sort(reverse=True)
+
+    face_count = int(face_summary.get("face_count") or 0)
+    if face_count <= 0 and area_ratios:
+        face_count = len(area_ratios)
+
+    largest_ratio = area_ratios[0] if area_ratios else _safe_float(face_summary.get("largest_face_area_ratio"), 0.0)
+    second_ratio = area_ratios[1] if len(area_ratios) > 1 else 0.0
+    top2_total = largest_ratio + second_ratio
+
+    subjectness = _face_subjectness_from_meta(meta)
+    readable_face_expectation = (
+        _smoothstep(0.010, 0.028, largest_ratio) * 0.55 +
+        _smoothstep(0.014, 0.040, top2_total) * 0.30 +
+        _smoothstep(1.0, 2.0, float(face_count)) * 0.15
+    ) * subjectness
+
+    weak_group_expr = 1.0 - _smoothstep(0.52, 0.72, avg_top2)
+    weak_best_expr = 1.0 - _smoothstep(0.58, 0.78, best_face)
+
+    visibility_penalty = readable_face_expectation * (
+        weak_group_expr * 0.75 +
+        weak_best_expr * 0.25
+    ) * 0.24
+
+    # Do not punish genuinely tiny background faces.
+    if largest_ratio < 0.008 and top2_total < 0.012:
+        visibility_penalty = 0.0
+
     signal = (
         coherence_expr * 0.62 +
         best_face * 0.10 +
@@ -2586,8 +2633,8 @@ def _face_expression_signal_from_meta(meta: dict[str, Any]) -> float:
         consistency_bonus * 0.05 +
         asymmetry_bonus
     )
+    signal -= visibility_penalty
     return _clamp01(signal)
-
 
 def _people_weight_from_meta(meta: dict[str, Any]) -> float:
     faces_meta = meta.get("faces") or {}
