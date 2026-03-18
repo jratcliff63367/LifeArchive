@@ -491,6 +491,11 @@ HTML_TEMPLATE = r"""
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             padding: 6px 0;
+            color: #e5e7eb;
+        }
+
+        .submenu .menu-item {
+            color: #e5e7eb;
         }
         .menu-item.has-submenu:hover > .submenu {
             display: block;
