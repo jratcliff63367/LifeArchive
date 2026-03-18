@@ -43,10 +43,14 @@ from PIL import ExifTags, Image, ImageOps
 # ------------------------------------------------------------
 
 SOURCE_DIRECTORIES = [
-    r"C:\Photos from 2025",
+    r"C:\TerrysBackup",
+    r"F:\GoogleTakeout\jratcliffscarab\Takeout\Google Photos",
+    r"F:\photographs",
+    r"F:\OldMediaTransfer",
+
 ]
 
-DEST_ROOT = r"C:\website-photos"
+DEST_ROOT = r"F:\GatherPhotos"
 
 # Mode:
 #   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally

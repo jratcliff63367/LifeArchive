@@ -25,7 +25,7 @@ PROGRESS_INTERVAL = 5
 COMMIT_INTERVAL = 500
 
 # Detection parameters
-SCORE_THRESHOLD = 0.85
+SCORE_THRESHOLD = 0.70
 NMS_THRESHOLD = 0.30
 TOP_K = 5000
 PROMINENT_FACE_THRESHOLD = 0.05
@@ -34,7 +34,7 @@ PROMINENT_FACE_THRESHOLD = 0.05
 # The image is resized so that max(width, height) == DETECTION_MAX_DIM,
 # preserving aspect ratio. Smaller images are left unchanged unless
 # UPSCALE_SMALL_IMAGES is set True.
-DETECTION_MAX_DIM = 1280
+DETECTION_MAX_DIM = 1800
 UPSCALE_SMALL_IMAGES = False
 
 # ------------------------------------------------------------
