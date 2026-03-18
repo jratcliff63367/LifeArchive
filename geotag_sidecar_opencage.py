@@ -16,7 +16,7 @@ from typing import Any
 
 EPSILON_GPS = 0.000001
 DEFAULT_ARCHIVE_ROOT = r"C:\website-photos"
-DEFAULT_LOOKUP_LIMIT = 10  # conservative first-run safety limit
+DEFAULT_LOOKUP_LIMIT = 2500 # conservative first-run safety limit
 DEFAULT_ROUND_DECIMALS = 3
 DEFAULT_REQUEST_DELAY_SECONDS = 1.1
 OPENCAGE_URL = "https://api.opencagedata.com/geocode/v1/json"
