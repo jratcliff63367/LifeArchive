@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import sqlite3
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -71,7 +71,7 @@ class PlacesService:
 
         resolved_selected = selected_node_id if selected_node_id in nodes else self._default_selected_node(nodes, root_id)
         selected_node = nodes[resolved_selected]
-        gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit)
+        gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit, selected_node=selected_node, context=context)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
         return {
             "context": context,
@@ -103,7 +103,7 @@ class PlacesService:
             "lon": node.lon,
         }
 
-    def _build_gallery_items(self, items: list[dict[str, Any]], gallery_limit: int = 18) -> list[dict[str, Any]]:
+    def _build_gallery_items(self, items: list[dict[str, Any]], gallery_limit: int = 18, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> list[dict[str, Any]]:
         deduped = self._dedupe_items(items)
         if not deduped:
             return []
@@ -113,23 +113,31 @@ class PlacesService:
             representative = self.choose_best_item(cluster) or sorted(cluster, key=self._hero_sort_key, reverse=True)[0]
             dt = self._parse_dt(representative.get('final_dt'))
             rep = dict(representative)
-            rep['_places_href'] = self._build_item_href(representative)
-            rep['_places_title'] = (f"{dt.strftime('%B')} {dt.day}, {dt.year}" if dt else str(representative.get('_month_name') or 'Photo'))
+            title = (f"{dt.strftime('%B')} {dt.day}, {dt.year}" if dt else str(representative.get('_month_name') or 'Photo'))
             if dt is None and representative.get('_year'):
-                rep['_places_title'] = f"{representative.get('_month_name') or 'Photo'} {representative.get('_year')}"
-            rep['_places_subtitle'] = f"{len(cluster)} photo" + ('' if len(cluster) == 1 else 's')
+                title = f"{representative.get('_month_name') or 'Photo'} {representative.get('_year')}"
+            subtitle = f"{len(cluster)} photo" + ('' if len(cluster) == 1 else 's')
+            rep['_places_title'] = title
+            rep['_places_subtitle'] = subtitle
             rep['_places_cluster_size'] = len(cluster)
+            rep['_places_href'] = self._build_bucket_href(cluster, representative, title, selected_node=selected_node, context=context)
             gallery.append(rep)
         gallery.sort(key=self._hero_sort_key, reverse=True)
         return gallery[:gallery_limit]
 
-    def _build_item_href(self, item: dict[str, Any]) -> str:
-        rel = str(item.get('_web_path') or item.get('rel_fqn') or '')
-        if rel:
-            rel = rel.replace('\\', '/')
-            return '/media/' + quote(rel, safe='/')
-        sha1 = str(item.get('sha1') or '')
-        return f'/thumbs/{quote(sha1)}.jpg' if sha1 else '#'
+    def _build_bucket_href(self, cluster: list[dict[str, Any]], representative: dict[str, Any], label: str, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> str:
+        sha1s = [str(item.get('sha1') or '').strip() for item in cluster if str(item.get('sha1') or '').strip()]
+        if not sha1s:
+            return '#'
+        selected_sha1 = str(representative.get('sha1') or sha1s[0])
+        params = {
+            'ids': ','.join(sha1s),
+            'sha1': selected_sha1,
+            'label': label,
+            'place': (selected_node.label if selected_node else 'Places'),
+            'back': (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places'),
+        }
+        return '/places_lightbox?' + urlencode(params)
 
     def _parse_dt(self, value: Any) -> datetime | None:
         if not value:

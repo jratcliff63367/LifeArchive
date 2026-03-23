@@ -821,7 +821,7 @@ HTML_TEMPLATE = r"""
                 {% if places_view.gallery_items %}
                 <div class="places-gallery">
                     {% for p in places_view.gallery_items %}
-                    <a class="places-gallery-card" href="{{ p._places_href if p._places_href is defined else ('/thumbs/' ~ p.sha1 ~ '.jpg') }}" target="_blank">
+                    <a class="places-gallery-card" href="{{ p._places_href if p._places_href is defined else ('/thumbs/' ~ p.sha1 ~ '.jpg') }}">
                         <img src="/thumbs/{{ p.sha1 }}.jpg" loading="lazy">
                         <div class="places-gallery-meta">
                             <div class="places-gallery-title">{{ p._places_title if p._places_title is defined else (p._month_name if p._month_name is defined else 'Photo') }}</div>
@@ -1008,6 +1008,7 @@ HTML_TEMPLATE = r"""
 
     <script>
         const manifests = {{ manifests | tojson | safe }};
+        const autoOpen = {{ auto_open | tojson | safe }};
         let curM = null;
         let curI = 0;
         let menuSha1 = '';
@@ -1722,6 +1723,13 @@ HTML_TEMPLATE = r"""
             });
 
             refreshSelectionUI();
+
+            if (autoOpen && autoOpen.manifest && manifests[autoOpen.manifest] && manifests[autoOpen.manifest].length > 0) {
+                let idx = Number(autoOpen.index || 0);
+                if (!Number.isFinite(idx) || idx < 0) idx = 0;
+                idx = Math.min(idx, manifests[autoOpen.manifest].length - 1);
+                openLB(idx, autoOpen.manifest);
+            }
         });
     </script>
 </body>
@@ -3180,6 +3188,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         kwargs.setdefault('action_links', None)
         kwargs.setdefault('day_calendar', None)
         kwargs.setdefault('places_view', None)
+        kwargs.setdefault('auto_open', None)
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
     @app.route("/media/<path:relative_path>")
@@ -3854,6 +3863,48 @@ def create_app(config: ArchiveConfig) -> Flask:
             action_links=[make_places_action(f'/places/tags/{tag}')],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
+        )
+
+    @app.route("/places_lightbox")
+    def places_lightbox():
+        ids_raw = str(request.args.get("ids") or "").strip()
+        selected_sha1 = str(request.args.get("sha1") or "").strip()
+        label = str(request.args.get("label") or "Place Photos").strip() or "Place Photos"
+        place_name = str(request.args.get("place") or "Places").strip() or "Places"
+        back = str(request.args.get("back") or "/places").strip() or "/places"
+
+        sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
+        if not sha1_order:
+            return "No images", 404
+
+        store.load_cache()
+        item_by_sha1 = {str(item.get("sha1")): item for item in store.db_cache}
+        imgs = [item_by_sha1[s] for s in sha1_order if s in item_by_sha1]
+        if not imgs:
+            return "No images", 404
+
+        for item in imgs:
+            item["_hero_score"] = store.get_hero_score(item)
+
+        if selected_sha1 and selected_sha1 not in {str(item.get("sha1")) for item in imgs}:
+            selected_sha1 = str(imgs[0].get("sha1") or "")
+        elif not selected_sha1:
+            selected_sha1 = str(imgs[0].get("sha1") or "")
+
+        initial_index = 0
+        for idx, item in enumerate(imgs):
+            if str(item.get("sha1")) == selected_sha1:
+                initial_index = idx
+                break
+
+        return render_page(
+            page_title=label,
+            active_tab="places",
+            banner_img="hero-places.png",
+            breadcrumb=f"<a href='{back}'>Places</a> / {place_name} / {label}",
+            photos=imgs,
+            manifests={"main_gallery": store.build_manifest(imgs)},
+            auto_open={"manifest": "main_gallery", "index": initial_index},
         )
 
     @app.route("/composite/<composite_name>.jpg")
