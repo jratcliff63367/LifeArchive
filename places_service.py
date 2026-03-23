@@ -5,6 +5,7 @@ import sqlite3
 from urllib.parse import quote
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -70,7 +71,7 @@ class PlacesService:
 
         resolved_selected = selected_node_id if selected_node_id in nodes else self._default_selected_node(nodes, root_id)
         selected_node = nodes[resolved_selected]
-        gallery_items = sorted(selected_node.item_refs or [], key=self._hero_sort_key, reverse=True)[:gallery_limit]
+        gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
         return {
             "context": context,
@@ -101,6 +102,77 @@ class PlacesService:
             "lat": node.lat,
             "lon": node.lon,
         }
+
+    def _build_gallery_items(self, items: list[dict[str, Any]], gallery_limit: int = 18) -> list[dict[str, Any]]:
+        deduped = self._dedupe_items(items)
+        if not deduped:
+            return []
+        clusters = self._cluster_items_by_time(deduped, threshold_seconds=20)
+        gallery: list[dict[str, Any]] = []
+        for cluster in clusters:
+            representative = self.choose_best_item(cluster) or sorted(cluster, key=self._hero_sort_key, reverse=True)[0]
+            dt = self._parse_dt(representative.get('final_dt'))
+            rep = dict(representative)
+            rep['_places_href'] = self._build_item_href(representative)
+            rep['_places_title'] = (f"{dt.strftime('%B')} {dt.day}, {dt.year}" if dt else str(representative.get('_month_name') or 'Photo'))
+            if dt is None and representative.get('_year'):
+                rep['_places_title'] = f"{representative.get('_month_name') or 'Photo'} {representative.get('_year')}"
+            rep['_places_subtitle'] = f"{len(cluster)} photo" + ('' if len(cluster) == 1 else 's')
+            rep['_places_cluster_size'] = len(cluster)
+            gallery.append(rep)
+        gallery.sort(key=self._hero_sort_key, reverse=True)
+        return gallery[:gallery_limit]
+
+    def _build_item_href(self, item: dict[str, Any]) -> str:
+        rel = str(item.get('_web_path') or item.get('rel_fqn') or '')
+        if rel:
+            rel = rel.replace('\\', '/')
+            return '/media/' + quote(rel, safe='/')
+        sha1 = str(item.get('sha1') or '')
+        return f'/thumbs/{quote(sha1)}.jpg' if sha1 else '#'
+
+    def _parse_dt(self, value: Any) -> datetime | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        for parser in (datetime.fromisoformat,):
+            try:
+                return parser(text.replace('Z', '+00:00'))
+            except Exception:
+                pass
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y:%m:%d %H:%M:%S'):
+            try:
+                return datetime.strptime(text, fmt)
+            except Exception:
+                pass
+        return None
+
+    def _cluster_items_by_time(self, items: list[dict[str, Any]], threshold_seconds: int = 20) -> list[list[dict[str, Any]]]:
+        stamped: list[tuple[datetime | None, dict[str, Any]]] = [(self._parse_dt(item.get('final_dt')), item) for item in items]
+        with_dt = [(dt, item) for dt, item in stamped if dt is not None]
+        without_dt = [item for dt, item in stamped if dt is None]
+        with_dt.sort(key=lambda pair: pair[0])
+        clusters: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        prev_dt: datetime | None = None
+        for dt, item in with_dt:
+            if not current:
+                current = [item]
+                prev_dt = dt
+                continue
+            if prev_dt is not None and (dt - prev_dt).total_seconds() <= threshold_seconds:
+                current.append(item)
+            else:
+                clusters.append(current)
+                current = [item]
+            prev_dt = dt
+        if current:
+            clusters.append(current)
+        for item in without_dt:
+            clusters.append([item])
+        return clusters
 
     def _hero_sort_key(self, item: dict[str, Any]) -> tuple[float, str]:
         hero = float(item.get("_hero_score") or 0.0)
@@ -216,6 +288,8 @@ class PlacesService:
                 node.lon_sum += lon
                 node.item_refs.append(rec["item"]) if nid != place_id else None
 
+        self._consolidate_leaf_siblings(nodes, root_id)
+
         for node in nodes.values():
             if node.photo_count > 0:
                 node.lat = node.lat_sum / node.photo_count
@@ -225,11 +299,13 @@ class PlacesService:
             node.item_refs = self._dedupe_items(node.item_refs or [])
             node.children.sort(key=lambda child_id: (-nodes[child_id].photo_count, nodes[child_id].label.lower()))
 
+        visible_ids = self._reachable_node_ids(nodes, root_id)
+
         return {
             "nodes": nodes,
             "root_id": root_id,
             "geotagged_count": len(geo_records),
-            "leaf_count": len([n for n in nodes.values() if n.level == "place"]),
+            "leaf_count": len([nid for nid in visible_ids if nodes[nid].level == "place"]),
         }
 
     def _dedupe_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -242,6 +318,94 @@ class PlacesService:
             seen.add(sha1)
             out.append(item)
         return out
+
+
+    def _consolidate_leaf_siblings(self, nodes: dict[str, PlaceNode], root_id: str) -> None:
+        reachable = self._reachable_node_ids(nodes, root_id)
+        for parent_id in list(reachable):
+            parent = nodes.get(parent_id)
+            if not parent or not parent.children:
+                continue
+
+            leaf_ids = [child_id for child_id in parent.children if self._is_leaf(nodes, child_id)]
+            if len(leaf_ids) < 2:
+                continue
+
+            grouped: dict[str, list[str]] = defaultdict(list)
+            for child_id in leaf_ids:
+                child = nodes[child_id]
+                grouped[self._normalize_place_label(child.label)].append(child_id)
+
+            if not any(len(group) > 1 for group in grouped.values()):
+                continue
+
+            new_children: list[str] = []
+            seen_leaf_ids: set[str] = set()
+            for child_id in parent.children:
+                if child_id in seen_leaf_ids:
+                    continue
+
+                child = nodes[child_id]
+                if not self._is_leaf(nodes, child_id):
+                    new_children.append(child_id)
+                    continue
+
+                group = grouped.get(self._normalize_place_label(child.label), [child_id])
+                if len(group) == 1:
+                    new_children.append(child_id)
+                    seen_leaf_ids.add(child_id)
+                    continue
+
+                canonical_id = max(group, key=lambda nid: (nodes[nid].photo_count, len(nodes[nid].item_refs or []), nid))
+                canonical = nodes[canonical_id]
+
+                merged_items: list[dict[str, Any]] = []
+                merged_count = 0
+                merged_lat_sum = 0.0
+                merged_lon_sum = 0.0
+                for gid in group:
+                    gnode = nodes[gid]
+                    merged_items.extend(gnode.item_refs or [])
+                    merged_count += gnode.photo_count
+                    merged_lat_sum += gnode.lat_sum
+                    merged_lon_sum += gnode.lon_sum
+
+                canonical.item_refs = self._dedupe_items(merged_items)
+                canonical.photo_count = len(canonical.item_refs)
+                if canonical.photo_count <= 0 and merged_count > 0:
+                    canonical.photo_count = merged_count
+                canonical.lat_sum = merged_lat_sum
+                canonical.lon_sum = merged_lon_sum
+                canonical.lat = canonical.lat_sum / canonical.photo_count if canonical.photo_count > 0 else None
+                canonical.lon = canonical.lon_sum / canonical.photo_count if canonical.photo_count > 0 else None
+                choice = self.choose_best_item(canonical.item_refs or [])
+                canonical.cover_sha1 = str(choice.get("sha1")) if choice else None
+
+                for gid in group:
+                    seen_leaf_ids.add(gid)
+
+                new_children.append(canonical_id)
+
+            parent.children = new_children
+
+    def _reachable_node_ids(self, nodes: dict[str, PlaceNode], root_id: str) -> set[str]:
+        seen: set[str] = set()
+        stack = [root_id]
+        while stack:
+            node_id = stack.pop()
+            if node_id in seen or node_id not in nodes:
+                continue
+            seen.add(node_id)
+            stack.extend(nodes[node_id].children or [])
+        return seen
+
+    def _is_leaf(self, nodes: dict[str, PlaceNode], node_id: str) -> bool:
+        node = nodes.get(node_id)
+        return bool(node) and not (node.children or [])
+
+    @staticmethod
+    def _normalize_place_label(label: str) -> str:
+        return " ".join(str(label or "").strip().lower().split())
 
     def _render_sidebar_html(self, nodes: dict[str, PlaceNode], root_id: str, selected_node_id: str) -> str:
         root = nodes[root_id]
