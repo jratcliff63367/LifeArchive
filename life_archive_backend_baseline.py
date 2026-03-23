@@ -821,13 +821,15 @@ HTML_TEMPLATE = r"""
                 {% if places_view.gallery_items %}
                 <div class="places-gallery">
                     {% for p in places_view.gallery_items %}
-                    <a class="places-gallery-card" href="{{ p._places_href if p._places_href is defined else ('/thumbs/' ~ p.sha1 ~ '.jpg') }}">
-                        <img src="/thumbs/{{ p.sha1 }}.jpg" loading="lazy">
+                    <div class="places-gallery-card">
+                        <a class="places-gallery-image-link" href="{{ p._places_href if p._places_href is defined else ('/thumbs/' ~ p.sha1 ~ '.jpg') }}">
+                            <img src="/thumbs/{{ p.sha1 }}.jpg" loading="lazy">
+                        </a>
                         <div class="places-gallery-meta">
-                            <div class="places-gallery-title">{{ p._places_title if p._places_title is defined else (p._month_name if p._month_name is defined else 'Photo') }}</div>
+                            <a class="places-gallery-title" href="{{ p._places_group_href if p._places_group_href is defined else (p._places_href if p._places_href is defined else ('/thumbs/' ~ p.sha1 ~ '.jpg')) }}">{{ p._places_title if p._places_title is defined else (p._month_name if p._month_name is defined else 'Photo') }}</a>
                             {% if p._places_subtitle is defined %}<div class="places-gallery-sub">{{ p._places_subtitle }}</div>{% endif %}
                         </div>
-                    </a>
+                    </div>
                     {% endfor %}
                 </div>
                 {% endif %}
@@ -3861,6 +3863,35 @@ def create_app(config: ArchiveConfig) -> Flask:
             banner_img="hero-tags.png",
             breadcrumb=f"<a href='/tags'>Tags</a> / {tag}",
             action_links=[make_places_action(f'/places/tags/{tag}')],
+            photos=imgs,
+            manifests={"main_gallery": store.build_manifest(imgs)},
+        )
+
+    @app.route("/places_bucket")
+    def places_bucket():
+        ids_raw = str(request.args.get("ids") or "").strip()
+        label = str(request.args.get("label") or "Place Photos").strip() or "Place Photos"
+        place_name = str(request.args.get("place") or "Places").strip() or "Places"
+        back = str(request.args.get("back") or "/places").strip() or "/places"
+
+        sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
+        if not sha1_order:
+            return "No images", 404
+
+        store.load_cache()
+        item_by_sha1 = {str(item.get("sha1")): item for item in store.db_cache}
+        imgs = [item_by_sha1[s] for s in sha1_order if s in item_by_sha1]
+        if not imgs:
+            return "No images", 404
+
+        for item in imgs:
+            item["_hero_score"] = store.get_hero_score(item)
+
+        return render_page(
+            page_title=label,
+            active_tab="places",
+            banner_img="hero-places.png",
+            breadcrumb=f"<a href='{back}'>Places</a> / {place_name} / {label}",
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )

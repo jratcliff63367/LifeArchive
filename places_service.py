@@ -120,12 +120,25 @@ class PlacesService:
             rep['_places_title'] = title
             rep['_places_subtitle'] = subtitle
             rep['_places_cluster_size'] = len(cluster)
-            rep['_places_href'] = self._build_bucket_href(cluster, representative, title, selected_node=selected_node, context=context)
+            rep['_places_group_href'] = self._build_bucket_page_href(cluster, title, selected_node=selected_node, context=context)
+            rep['_places_href'] = self._build_bucket_lightbox_href(cluster, representative, title, selected_node=selected_node, context=context)
             gallery.append(rep)
         gallery.sort(key=self._hero_sort_key, reverse=True)
         return gallery[:gallery_limit]
 
-    def _build_bucket_href(self, cluster: list[dict[str, Any]], representative: dict[str, Any], label: str, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> str:
+    def _build_bucket_page_href(self, cluster: list[dict[str, Any]], label: str, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> str:
+        sha1s = [str(item.get('sha1') or '').strip() for item in cluster if str(item.get('sha1') or '').strip()]
+        if not sha1s:
+            return '#'
+        params = {
+            'ids': ','.join(sha1s),
+            'label': label,
+            'place': (selected_node.label if selected_node else 'Places'),
+            'back': (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places'),
+        }
+        return '/places_bucket?' + urlencode(params)
+
+    def _build_bucket_lightbox_href(self, cluster: list[dict[str, Any]], representative: dict[str, Any], label: str, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> str:
         sha1s = [str(item.get('sha1') or '').strip() for item in cluster if str(item.get('sha1') or '').strip()]
         if not sha1s:
             return '#'
