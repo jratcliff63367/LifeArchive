@@ -164,12 +164,7 @@ class PlacesService:
         if not all_items:
             return None
 
-        clusters = self._cluster_items_by_time(all_items, threshold_seconds=20)
-        reps: list[dict[str, Any]] = []
-        for cluster in clusters:
-            rep = self.choose_best_item(cluster) or sorted(cluster, key=self._hero_sort_key, reverse=True)[0]
-            reps.append(dict(rep))
-        reps.sort(key=self._hero_sort_key, reverse=True)
+        reps = self._select_time_cluster_representatives(all_items, target_count=min(mosaic_limit, 16))
 
         cover_items = []
         selected_sha1s: set[str] = set()
@@ -179,9 +174,8 @@ class PlacesService:
                 cover_items.append({'sha1': sha1})
                 selected_sha1s.add(sha1)
 
-        # Time-cluster representatives should drive the first pass, but if this
-        # place has enough photos to fill a 4x4 hero card, backfill from the
-        # remaining best-scored photos so the summary card does not look half-empty.
+        # If some images have no usable timestamp, backfill from the remaining
+        # best-scored photos so the mosaic can still fill out to 16.
         target_count = min(16, len(all_items))
         if len(cover_items) < target_count:
             remaining = sorted(all_items, key=self._hero_sort_key, reverse=True)
@@ -237,6 +231,99 @@ class PlacesService:
             except Exception:
                 pass
         return None
+
+    def _select_time_cluster_representatives(self, items: list[dict[str, Any]], target_count: int = 16) -> list[dict[str, Any]]:
+        if not items:
+            return []
+
+        stamped: list[tuple[float, dict[str, Any]]] = []
+        without_dt: list[dict[str, Any]] = []
+        for item in items:
+            dt = self._parse_dt(item.get('final_dt'))
+            if dt is None:
+                without_dt.append(item)
+                continue
+            stamped.append((dt.timestamp(), item))
+
+        if not stamped:
+            return sorted(items, key=self._hero_sort_key, reverse=True)[:target_count]
+
+        stamped.sort(key=lambda pair: pair[0])
+        k = min(max(1, target_count), len(stamped))
+
+        centers = self._init_time_centers_kmeans_pp([ts for ts, _ in stamped], k)
+        for _ in range(10):
+            clusters: list[list[tuple[float, dict[str, Any]]]] = [[] for _ in centers]
+            for ts, item in stamped:
+                idx = min(range(len(centers)), key=lambda i: abs(ts - centers[i]))
+                clusters[idx].append((ts, item))
+
+            new_centers: list[float] = []
+            for i, cluster in enumerate(clusters):
+                if not cluster:
+                    new_centers.append(centers[i])
+                    continue
+                new_centers.append(sum(ts for ts, _ in cluster) / len(cluster))
+
+            if all(abs(a - b) < 1.0 for a, b in zip(centers, new_centers)):
+                centers = new_centers
+                break
+            centers = new_centers
+
+        clusters = [[] for _ in centers]
+        for ts, item in stamped:
+            idx = min(range(len(centers)), key=lambda i: abs(ts - centers[i]))
+            clusters[idx].append((ts, item))
+
+        reps_with_center: list[tuple[float, dict[str, Any]]] = []
+        for idx, cluster in enumerate(clusters):
+            if not cluster:
+                continue
+            cluster_items = [item for _, item in cluster]
+            rep = self.choose_best_item(cluster_items) or sorted(cluster_items, key=self._hero_sort_key, reverse=True)[0]
+            reps_with_center.append((centers[idx], dict(rep)))
+
+        reps_with_center.sort(key=lambda pair: pair[0])
+        reps = [rep for _, rep in reps_with_center]
+
+        # If we had fewer valid-timestamp clusters than requested, optionally
+        # append no-datetime items by quality as a fallback.
+        if len(reps) < min(target_count, len(items)) and without_dt:
+            seen = {str(rep.get('sha1') or '').strip() for rep in reps}
+            for item in sorted(without_dt, key=self._hero_sort_key, reverse=True):
+                sha1 = str(item.get('sha1') or '').strip()
+                if not sha1 or sha1 in seen:
+                    continue
+                reps.append(dict(item))
+                seen.add(sha1)
+                if len(reps) >= min(target_count, len(items)):
+                    break
+
+        return reps[:target_count]
+
+    def _init_time_centers_kmeans_pp(self, values: list[float], k: int) -> list[float]:
+        if not values:
+            return []
+        if k >= len(values):
+            return list(values)
+
+        ordered = sorted(values)
+        centers = [ordered[len(ordered) // 2]]
+
+        while len(centers) < k:
+            best_value = None
+            best_dist = -1.0
+            for value in ordered:
+                dist = min(abs(value - c) for c in centers)
+                if dist > best_dist:
+                    best_dist = dist
+                    best_value = value
+            if best_value is None:
+                break
+            centers.append(best_value)
+
+        centers = sorted(centers)
+        return centers[:k]
 
     def _cluster_items_by_time(self, items: list[dict[str, Any]], threshold_seconds: int = 20) -> list[list[dict[str, Any]]]:
         stamped: list[tuple[datetime | None, dict[str, Any]]] = [(self._parse_dt(item.get('final_dt')), item) for item in items]
