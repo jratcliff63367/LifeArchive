@@ -70,9 +70,19 @@ class PlacesService:
                 "leaf_cards": [],
             }
 
-        resolved_selected = selected_node_id if selected_node_id in nodes else self._default_selected_node(nodes, root_id)
+        collapsed_node_id = None
+        raw_selected = selected_node_id or ""
+        collapse_prefix = "__collapse__::"
+        if isinstance(raw_selected, str) and raw_selected.startswith(collapse_prefix):
+            collapsed_node_id = raw_selected[len(collapse_prefix):]
+            raw_selected = collapsed_node_id
+
+        resolved_selected = raw_selected if raw_selected in nodes else self._default_selected_node(nodes, root_id)
         if resolved_selected not in nodes:
             resolved_selected = root_id
+        if collapsed_node_id not in nodes:
+            collapsed_node_id = None
+
         selected_node = nodes[resolved_selected]
         gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit, selected_node=selected_node, context=context)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
@@ -81,7 +91,7 @@ class PlacesService:
             "context": context,
             "selected_node_id": resolved_selected,
             "selected_node": self._serialize_node(selected_node),
-            "sidebar_html": self._render_sidebar_html(nodes, root_id, resolved_selected),
+            "sidebar_html": self._render_sidebar_html(nodes, root_id, resolved_selected, collapsed_node_id),
             "gallery_items": gallery_items,
             "all_place_card": all_place_card,
             "selected_path": [self._serialize_node(nodes[nid]) for nid in self._path_to_root(nodes, resolved_selected)],
@@ -477,19 +487,19 @@ class PlacesService:
     def _normalize_place_label(label: str) -> str:
         return " ".join(str(label or "").strip().lower().split())
 
-    def _render_sidebar_html(self, nodes: dict[str, PlaceNode], root_id: str, selected_node_id: str) -> str:
+    def _render_sidebar_html(self, nodes: dict[str, PlaceNode], root_id: str, selected_node_id: str, collapsed_node_id: str | None = None) -> str:
         root = nodes[root_id]
         bits = ["<div class='places-tree'>"]
         for child_id in root.children:
-            bits.append(self._render_node(nodes, child_id, selected_node_id, depth=0))
+            bits.append(self._render_node(nodes, child_id, selected_node_id, depth=0, collapsed_node_id=collapsed_node_id))
         bits.append("</div>")
         return "".join(bits)
 
-    def _render_node(self, nodes: dict[str, PlaceNode], node_id: str, selected_node_id: str, depth: int) -> str:
+    def _render_node(self, nodes: dict[str, PlaceNode], node_id: str, selected_node_id: str, depth: int, collapsed_node_id: str | None = None) -> str:
         node = nodes[node_id]
         selected = self._path_set(nodes, selected_node_id)
         is_active = node_id == selected_node_id
-        is_open = node_id in selected or depth < 1
+        is_open = (node_id in selected or depth < 1) and node_id != collapsed_node_id
         icon = {
             "country": "🌍",
             "region": "🗺️",
@@ -501,7 +511,10 @@ class PlacesService:
             cls.append("active")
         if is_open:
             cls.append("open")
-        target_node_id = node.parent_id if is_active and node.parent_id else node_id
+        if is_active and is_open and node.children:
+            target_node_id = f"__collapse__::{node_id}"
+        else:
+            target_node_id = node_id
         href = f"?node={quote(target_node_id, safe='')}"
         html_bits = [
             f"<div class='{' '.join(cls)}' style='--depth:{depth};'>",
@@ -514,7 +527,7 @@ class PlacesService:
         if node.children and is_open:
             html_bits.append("<div class='places-node-children'>")
             for child_id in node.children:
-                html_bits.append(self._render_node(nodes, child_id, selected_node_id, depth + 1))
+                html_bits.append(self._render_node(nodes, child_id, selected_node_id, depth + 1, collapsed_node_id=collapsed_node_id))
             html_bits.append("</div>")
         html_bits.append("</div>")
         return "".join(html_bits)
