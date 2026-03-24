@@ -71,6 +71,8 @@ class PlacesService:
             }
 
         resolved_selected = selected_node_id if selected_node_id in nodes else self._default_selected_node(nodes, root_id)
+        if resolved_selected not in nodes:
+            resolved_selected = root_id
         selected_node = nodes[resolved_selected]
         gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit, selected_node=selected_node, context=context)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
@@ -499,7 +501,8 @@ class PlacesService:
             cls.append("active")
         if is_open:
             cls.append("open")
-        href = f"?node={quote(node_id, safe='')}"
+        target_node_id = node.parent_id if is_active and node.parent_id else node_id
+        href = f"?node={quote(target_node_id, safe='')}"
         html_bits = [
             f"<div class='{' '.join(cls)}' style='--depth:{depth};'>",
             f"<a class='places-node-link' href='{href}'>",
@@ -529,10 +532,10 @@ class PlacesService:
         return set(self._path_to_root(nodes, node_id) + ([node_id] if node_id else []))
 
     def _default_selected_node(self, nodes: dict[str, PlaceNode], root_id: str) -> str:
-        cur = root_id
-        while nodes[cur].children:
-            cur = nodes[cur].children[0]
-        return cur
+        root = nodes.get(root_id)
+        if root and root.children:
+            return root.children[0]
+        return root_id
 
     def _build_leaf_cards(self, nodes: dict[str, PlaceNode], selected_node: PlaceNode) -> list[dict[str, Any]]:
         cards: list[dict[str, Any]] = []
