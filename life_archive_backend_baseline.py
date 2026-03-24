@@ -4348,6 +4348,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}",
+            action_links=[make_places_action(f'/places/timeline/year/{year}')],
             cards=cards,
             manifests=manifests,
             card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
@@ -4363,7 +4364,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / {month_name}",
-            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}],
+            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}'), {'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )
@@ -4379,7 +4380,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / Day View",
-            action_links=[{'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
+            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}'), {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
             day_calendar=day_calendar,
         )
 
@@ -4397,7 +4398,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / <a href='/timeline/month/{year}/{month}/days'>Day View</a> / {day_int}",
-            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}, {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
+            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}/day/{day}'), {'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}, {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )
