@@ -172,10 +172,28 @@ class PlacesService:
         reps.sort(key=self._hero_sort_key, reverse=True)
 
         cover_items = []
+        selected_sha1s: set[str] = set()
         for rep in reps[:mosaic_limit]:
             sha1 = str(rep.get('sha1') or '').strip()
-            if sha1:
+            if sha1 and sha1 not in selected_sha1s:
                 cover_items.append({'sha1': sha1})
+                selected_sha1s.add(sha1)
+
+        # Time-cluster representatives should drive the first pass, but if this
+        # place has enough photos to fill a 4x4 hero card, backfill from the
+        # remaining best-scored photos so the summary card does not look half-empty.
+        target_count = min(16, len(all_items))
+        if len(cover_items) < target_count:
+            remaining = sorted(all_items, key=self._hero_sort_key, reverse=True)
+            for item in remaining:
+                sha1 = str(item.get('sha1') or '').strip()
+                if not sha1 or sha1 in selected_sha1s:
+                    continue
+                cover_items.append({'sha1': sha1})
+                selected_sha1s.add(sha1)
+                if len(cover_items) >= target_count:
+                    break
+
         cover_items = cover_items[:16]
 
         title = f"All Photos at {selected_node.label}"
