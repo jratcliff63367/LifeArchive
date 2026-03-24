@@ -694,7 +694,7 @@ HTML_TEMPLATE = r"""
         .places-gallery-meta { padding: 10px 12px 12px; }
         .places-gallery-title { font-size:0.82em; font-weight:800; color:#cfcfcf; text-transform: uppercase; letter-spacing:0.04em; }
         .places-gallery-sub { margin-top: 4px; color:#8f8f8f; font-size:0.8em; font-weight:700; }
-        .places-all-card { margin-bottom: 24px; border: 3px solid rgba(215,185,255,0.92); border-radius: 18px; overflow: hidden; background: linear-gradient(180deg, rgba(122,92,255,0.18), rgba(18,14,28,0.96)); box-shadow: 0 22px 48px rgba(0,0,0,0.40), 0 0 0 1px rgba(255,255,255,0.05) inset; }
+        .places-all-card { margin-bottom: 24px; border: 4px solid rgba(225,198,255,0.98); border-radius: 18px; overflow: hidden; background: linear-gradient(180deg, rgba(122,92,255,0.22), rgba(18,14,28,0.97)); box-shadow: 0 24px 52px rgba(0,0,0,0.44), 0 0 0 1px rgba(255,255,255,0.06) inset; }
         .places-all-card-head { display:flex; justify-content: space-between; align-items:flex-start; gap: 16px; padding: 16px 18px 12px; flex-wrap: wrap; }
         .places-all-kicker { color: var(--accent); font-size: 0.72em; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
         .places-all-title { color:#fff; font-size:1.12em; font-weight:900; text-decoration:none; display:inline-block; }
@@ -703,13 +703,13 @@ HTML_TEMPLATE = r"""
         .places-all-btn { display:inline-flex; align-items:center; gap:8px; padding: 10px 14px; border-radius: 12px; text-decoration:none; font-weight:800; font-size:0.84em; }
         .places-all-btn.primary { background: var(--accent); color:#fff; }
         .places-all-btn.secondary { background: rgba(255,255,255,0.04); color:#d9d9d9; border:1px solid #2f2f2f; }
-        .places-all-grid-shell { margin: 0 18px 18px; padding: 14px; border-radius: 16px; border: 3px solid rgba(215,185,255,0.96); background: #242424; box-shadow: 0 0 0 2px rgba(0,0,0,0.42) inset, 0 16px 32px rgba(0,0,0,0.30); }
-        .places-all-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .places-all-grid-shell { display:block; width:100%; max-width:100%; margin: 0 18px 18px; padding: 14px; border-radius: 16px; border: 4px solid rgba(230,210,255,0.98); background: #303030; box-shadow: 0 0 0 2px rgba(0,0,0,0.46) inset, 0 18px 36px rgba(0,0,0,0.34); }
+        .places-all-grid { display:grid; grid-template-columns: repeat(var(--places-all-cols, 4), minmax(0, 1fr)); gap: 8px; width:100%; }
         .places-all-grid-link { display:block; text-decoration:none; }
         .places-all-grid img { width:100%; aspect-ratio: 1/1; object-fit: cover; display:block; border-radius: 10px; background:#101010; border: 2px solid rgba(255,255,255,0.20); box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset; transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease; }
         .places-all-grid-link:hover img { border-color: rgba(215,185,255,0.98); box-shadow: 0 10px 24px rgba(0,0,0,0.40), 0 0 0 1px rgba(255,255,255,0.10) inset; transform: translateY(-1px); }
-        @media (max-width: 900px) { .places-all-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-        @media (max-width: 640px) { .places-all-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; } }
+        @media (max-width: 900px) { .places-all-grid { width:100%; } }
+        @media (max-width: 640px) { .places-all-grid { grid-template-columns: repeat(min(var(--places-all-cols, 4), 2), minmax(0, 1fr)); width: 100%; } .places-all-grid-shell { display:block; } }
         .places-leaf-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; margin-bottom: 18px; }
         .places-leaf-card { text-decoration:none; color:inherit; background: rgba(255,255,255,0.03); border:1px solid #313131; border-radius:14px; overflow:hidden; }
         .places-leaf-card:hover { border-color: var(--accent); }
@@ -1001,7 +1001,7 @@ HTML_TEMPLATE = r"""
                     </div>
                     {% if places_view.all_place_card.cover_items %}
                     <a class="places-all-grid-link" href="{{ places_view.all_place_card.primary_href }}">
-                        <div class="places-all-grid-shell">
+                        <div class="places-all-grid-shell" style="--places-all-cols: {{ 4 if (places_view.all_place_card.cover_items|length) >= 4 else (places_view.all_place_card.cover_items|length if (places_view.all_place_card.cover_items|length) > 0 else 1) }}; {% set _cover_len = places_view.all_place_card.cover_items|length %}{% if _cover_len < 4 %}max-width: calc({{ _cover_len if _cover_len > 0 else 1 }} * 150px + {{ (_cover_len - 1) if _cover_len > 0 else 0 }} * 8px + 28px);{% endif %}">
                             <div class="places-all-grid">
                                 {% for cp in places_view.all_place_card.cover_items[:16] %}
                                 <img src="/thumbs/{{ cp.sha1 }}.jpg" loading="lazy">
@@ -1162,7 +1162,7 @@ HTML_TEMPLATE = r"""
                     </div>
                     {% if places_view.all_place_card.cover_items %}
                     <a class="places-all-grid-link" href="{{ places_view.all_place_card.primary_href }}">
-                        <div class="places-all-grid-shell">
+                        <div class="places-all-grid-shell" style="--places-all-cols: {{ 4 if (places_view.all_place_card.cover_items|length) >= 4 else (places_view.all_place_card.cover_items|length if (places_view.all_place_card.cover_items|length) > 0 else 1) }}; {% set _cover_len = places_view.all_place_card.cover_items|length %}{% if _cover_len < 4 %}max-width: calc({{ _cover_len if _cover_len > 0 else 1 }} * 150px + {{ (_cover_len - 1) if _cover_len > 0 else 0 }} * 8px + 28px);{% endif %}">
                             <div class="places-all-grid">
                                 {% for cp in places_view.all_place_card.cover_items[:16] %}
                                 <img src="/thumbs/{{ cp.sha1 }}.jpg" loading="lazy">
@@ -1305,6 +1305,10 @@ HTML_TEMPLATE = r"""
 
             <div id="lb-section-semantic" class="lb-section">
                 <div id="lb-semantic" class="lb-kv"></div>
+            </div>
+
+            <div id="lb-section-place" class="lb-section">
+                <div id="lb-place" class="lb-kv"></div>
             </div>
 
             <div id="lb-section-ai-summary" class="lb-section">
@@ -1524,6 +1528,7 @@ HTML_TEMPLATE = r"""
                     'face-expression': 'Face Expression',
                     'aesthetic': 'Aesthetic',
                     'semantic': 'Semantic',
+                    'place': 'Place',
                     'ai-summary': 'AI Summary',
                     'raw': 'Raw',
                 };
@@ -1655,6 +1660,7 @@ HTML_TEMPLATE = r"""
                 const faceBoxes = faces.boxes || [];
                 const aesthetic = data.aesthetic || {};
                 const semantic = data.semantic || {};
+                const place = data.place || {};
                 const aiSummary = data.ai_summary || {};
                 const faceExpression = data.face_expression || {};
                 const faceExpressionSummary = faceExpression.summary || {};
@@ -1744,6 +1750,26 @@ HTML_TEMPLATE = r"""
                     ['Warnings', semantic.warnings || ''],
                 ].filter(row => row[1] !== '' && row[1] !== 'None');
 
+                const placeRows = [
+                    ['Formatted', place.formatted || ''],
+                    ['Place Name', place.place_name || ''],
+                    ['Road', place.road || ''],
+                    ['Suburb', place.suburb || ''],
+                    ['Locality', place.locality || ''],
+                    ['City', place.city || ''],
+                    ['Town', place.town || ''],
+                    ['Village', place.village || ''],
+                    ['Hamlet', place.hamlet || ''],
+                    ['County', place.county || ''],
+                    ['State', place.state || ''],
+                    ['Country', place.country || ''],
+                    ['Coord Key', place.coord_key || ''],
+                    ['Source Lat', place.source_lat || ''],
+                    ['Source Lon', place.source_lon || ''],
+                    ['Rounded Lat', place.lat_rounded || ''],
+                    ['Rounded Lon', place.lon_rounded || ''],
+                ].filter(row => row[1] !== '' && row[1] !== 'None');
+
                 const aiSummaryRows = [
                     ['Summary', aiSummary.summary_text || ''],
                     ['Model Name', aiSummary.model_name || ''],
@@ -1758,6 +1784,7 @@ HTML_TEMPLATE = r"""
                 renderFaceExpressionFaces(faceExpressionFaces);
                 renderKV('lb-aesthetic', aestheticRows);
                 renderKV('lb-semantic', semanticRows);
+                renderKV('lb-place', placeRows);
                 renderKV('lb-ai-summary', aiSummaryRows);
                 renderFaceBoxes(faceBoxes);
 
@@ -1786,6 +1813,7 @@ HTML_TEMPLATE = r"""
                 if (faceExpressionRows.length > 0 || faceExpressionFaces.length > 0) availableTabs.push('face-expression');
                 if (aestheticRows.length > 0) availableTabs.push('aesthetic');
                 if (semanticRows.length > 0) availableTabs.push('semantic');
+                if (placeRows.length > 0) availableTabs.push('place');
                 if (aiSummaryRows.length > 0) availableTabs.push('ai-summary');
                 availableTabs.push('raw');
                 buildMetaTabs(availableTabs);
@@ -1797,6 +1825,7 @@ HTML_TEMPLATE = r"""
                 renderFaceExpressionFaces([]);
                 renderKV('lb-aesthetic', []);
                 renderKV('lb-semantic', []);
+                renderKV('lb-place', []);
                 renderKV('lb-ai-summary', []);
                 renderFaceBoxes([]);
                 clearFaceOverlay();
@@ -2869,6 +2898,7 @@ class ArchiveStore:
             "faces": {"summary": {}, "boxes": []},
             "aesthetic": {},
             "semantic": {},
+            "place": {},
             "ai_summary": {},
             "raw": {},
         }
@@ -2931,6 +2961,55 @@ class ArchiveStore:
                 "file_extension": str(ext_val),
                 "file_size": "" if file_size_val is None else str(file_size_val),
             }
+
+            try:
+                with sqlite3.connect(self.config.geo_db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    geo_row = conn.execute(
+                        """
+                        SELECT pg.coord_key, pg.source_lat, pg.source_lon,
+                               gc.country, gc.state, gc.county, gc.city, gc.town, gc.village,
+                               gc.hamlet, gc.suburb, gc.place_name, gc.formatted, gc.road,
+                               gc.lat_rounded, gc.lon_rounded
+                        FROM photo_geo pg
+                        JOIN geo_cache gc ON gc.coord_key = pg.coord_key
+                        WHERE pg.sha1 = ?
+                        LIMIT 1
+                        """,
+                        (sha1,),
+                    ).fetchone()
+
+                if geo_row:
+                    gr = dict(geo_row)
+                    locality_parts = [
+                        gr.get("city") or "",
+                        gr.get("town") or "",
+                        gr.get("village") or "",
+                        gr.get("hamlet") or "",
+                        gr.get("suburb") or "",
+                    ]
+                    locality = next((p for p in locality_parts if p), "")
+                    result["place"] = {
+                        "formatted": gr.get("formatted") or "",
+                        "place_name": gr.get("place_name") or "",
+                        "road": gr.get("road") or "",
+                        "suburb": gr.get("suburb") or "",
+                        "locality": locality,
+                        "city": gr.get("city") or "",
+                        "town": gr.get("town") or "",
+                        "village": gr.get("village") or "",
+                        "hamlet": gr.get("hamlet") or "",
+                        "county": gr.get("county") or "",
+                        "state": gr.get("state") or "",
+                        "country": gr.get("country") or "",
+                        "coord_key": gr.get("coord_key") or "",
+                        "source_lat": "" if gr.get("source_lat") is None else f"{float(gr.get('source_lat')):.6f}",
+                        "source_lon": "" if gr.get("source_lon") is None else f"{float(gr.get('source_lon')):.6f}",
+                        "lat_rounded": "" if gr.get("lat_rounded") is None else str(gr.get("lat_rounded")),
+                        "lon_rounded": "" if gr.get("lon_rounded") is None else str(gr.get("lon_rounded")),
+                    }
+            except Exception:
+                pass
 
         if self.config.technical_db_path.exists():
             try:
