@@ -41,10 +41,17 @@ class PlaceNode:
 
 
 class PlacesService:
-    def __init__(self, archive_root: Path, geo_db_path: Path, chooser: Callable[[list[dict[str, Any]]], dict[str, Any] | None]) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        geo_db_path: Path,
+        chooser: Callable[[list[dict[str, Any]]], dict[str, Any] | None],
+        bucket_registrar: Callable[[list[str], str, str, str], str] | None = None,
+    ) -> None:
         self.archive_root = Path(archive_root)
         self.geo_db_path = Path(geo_db_path)
         self.choose_best_item = chooser
+        self.bucket_registrar = bucket_registrar
 
     def places_get_view(
         self,
@@ -135,11 +142,16 @@ class PlacesService:
         sha1s = [str(item.get('sha1') or '').strip() for item in cluster if str(item.get('sha1') or '').strip()]
         if not sha1s:
             return '#'
+        place = (selected_node.label if selected_node else 'Places')
+        back = (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places')
+        if self.bucket_registrar:
+            token = self.bucket_registrar(sha1s, label, place, back)
+            return '/places_bucket?' + urlencode({'token': token})
         params = {
             'ids': ','.join(sha1s),
             'label': label,
-            'place': (selected_node.label if selected_node else 'Places'),
-            'back': (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places'),
+            'place': place,
+            'back': back,
         }
         return '/places_bucket?' + urlencode(params)
 
@@ -148,12 +160,17 @@ class PlacesService:
         if not sha1s:
             return '#'
         selected_sha1 = str(representative.get('sha1') or sha1s[0])
+        place = (selected_node.label if selected_node else 'Places')
+        back = (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places')
+        if self.bucket_registrar:
+            token = self.bucket_registrar(sha1s, label, place, back)
+            return '/places_lightbox?' + urlencode({'token': token, 'sha1': selected_sha1})
         params = {
             'ids': ','.join(sha1s),
             'sha1': selected_sha1,
             'label': label,
-            'place': (selected_node.label if selected_node else 'Places'),
-            'back': (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places'),
+            'place': place,
+            'back': back,
         }
         return '/places_lightbox?' + urlencode(params)
 

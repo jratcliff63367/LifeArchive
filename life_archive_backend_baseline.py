@@ -38,6 +38,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -3677,7 +3678,30 @@ def _find_clusters_in_items(
 def create_app(config: ArchiveConfig) -> Flask:
     app = Flask(__name__)
     store = ArchiveStore(config)
-    places = PlacesService(config.archive_root, config.geo_db_path, store.choose_best_interesting_item)
+    places_bucket_store: dict[str, dict[str, Any]] = {}
+
+    def register_places_bucket(sha1s: list[str], label: str, place: str, back: str) -> str:
+        token = secrets.token_urlsafe(12)
+        places_bucket_store[token] = {
+            'ids': list(sha1s),
+            'label': label,
+            'place': place,
+            'back': back,
+            'created_at': time.time(),
+        }
+        if len(places_bucket_store) > 2000:
+            cutoff = time.time() - 86400
+            stale = [k for k, v in places_bucket_store.items() if float(v.get('created_at', 0)) < cutoff]
+            for k in stale[:1000]:
+                places_bucket_store.pop(k, None)
+        return token
+
+    places = PlacesService(
+        config.archive_root,
+        config.geo_db_path,
+        store.choose_best_interesting_item,
+        bucket_registrar=register_places_bucket,
+    )
     job_lock = threading.Lock()
     jobs: dict[str, dict[str, Any]] = {}
 
@@ -4607,12 +4631,21 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     @app.route("/places_bucket")
     def places_bucket():
+        token = str(request.args.get("token") or "").strip()
         ids_raw = str(request.args.get("ids") or "").strip()
         label = str(request.args.get("label") or "Place Photos").strip() or "Place Photos"
         place_name = str(request.args.get("place") or "Places").strip() or "Places"
         back = str(request.args.get("back") or "/places").strip() or "/places"
 
-        sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
+        sha1_order: list[str] = []
+        if token:
+            payload = places_bucket_store.get(token) or {}
+            sha1_order = [str(part).strip() for part in payload.get("ids", []) if str(part).strip()]
+            label = str(payload.get("label") or label).strip() or "Place Photos"
+            place_name = str(payload.get("place") or place_name).strip() or "Places"
+            back = str(payload.get("back") or back).strip() or "/places"
+        else:
+            sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
         if not sha1_order:
             return "No images", 404
 
@@ -4636,13 +4669,22 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     @app.route("/places_lightbox")
     def places_lightbox():
+        token = str(request.args.get("token") or "").strip()
         ids_raw = str(request.args.get("ids") or "").strip()
         selected_sha1 = str(request.args.get("sha1") or "").strip()
         label = str(request.args.get("label") or "Place Photos").strip() or "Place Photos"
         place_name = str(request.args.get("place") or "Places").strip() or "Places"
         back = str(request.args.get("back") or "/places").strip() or "/places"
 
-        sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
+        sha1_order: list[str] = []
+        if token:
+            payload = places_bucket_store.get(token) or {}
+            sha1_order = [str(part).strip() for part in payload.get("ids", []) if str(part).strip()]
+            label = str(payload.get("label") or label).strip() or "Place Photos"
+            place_name = str(payload.get("place") or place_name).strip() or "Places"
+            back = str(payload.get("back") or back).strip() or "/places"
+        else:
+            sha1_order = [part.strip() for part in ids_raw.split(",") if part.strip()]
         if not sha1_order:
             return "No images", 404
 
