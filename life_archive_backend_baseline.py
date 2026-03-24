@@ -1092,6 +1092,11 @@ HTML_TEMPLATE = r"""
                     <a href="{{ c.url }}" style="text-decoration:none; color:#fff;"><h3 style="margin:0;">{{ c.title }}</h3></a>
                     <div style="color:#666; font-size:0.85em; font-weight:700;">{{ c.subtitle }}</div>
                 </div>
+                {% if c.places_url %}
+                <div class="tag-container" style="padding-top:0; padding-bottom:8px;">
+                    <a href="{{ c.places_url }}" class="page-action places-action" style="font-size:0.72em; padding:8px 12px;">📍 Places</a>
+                </div>
+                {% endif %}
                 <div class="tag-container">
                     {% for t in c.tags %}
                     <a href="/tags/{{ t }}" class="tag-pill">{{ t }}</a>
@@ -4264,6 +4269,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                     "title": decade,
                     "subtitle": f"{len(items)} items",
                     "url": f"/timeline/decade/{decade}",
+                    "places_url": f"/places/timeline/decade/{decade}",
                     "heroes": items,
                     "tags": store.get_top_tags(items),
                 }
@@ -4297,6 +4303,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                     "title": year,
                     "subtitle": f"{len(items)} items",
                     "url": f"/timeline/year/{year}",
+                    "places_url": f"/places/timeline/year/{year}",
                     "heroes": items,
                     "tags": store.get_top_tags(items),
                 }
@@ -4334,6 +4341,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                     "title": month_name,
                     "subtitle": f"{len(imgs)} items",
                     "url": f"/timeline/month/{year}/{month_code}",
+                    "places_url": f"/places/timeline/month/{year}/{month_code}",
                     "heroes": imgs,
                     "tags": store.get_top_tags(imgs),
                 }
@@ -4348,7 +4356,6 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}",
-            action_links=[make_places_action(f'/places/timeline/year/{year}')],
             cards=cards,
             manifests=manifests,
             card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
@@ -4364,7 +4371,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / {month_name}",
-            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}'), {'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}],
+            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )
@@ -4380,7 +4387,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / Day View",
-            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}'), {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
+            action_links=[{'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
             day_calendar=day_calendar,
         )
 
@@ -4398,7 +4405,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             active_tab="timeline",
             banner_img="hero-timeline.png",
             breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / <a href='/timeline/year/{year}'>{year}</a> / <a href='/timeline/month/{year}/{month}'>{month_name}</a> / <a href='/timeline/month/{year}/{month}/days'>Day View</a> / {day_int}",
-            action_links=[make_places_action(f'/places/timeline/month/{year}/{month}/day/{day}'), {'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}, {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
+            action_links=[{'label': 'Day View', 'url': f'/timeline/month/{year}/{month}/days', 'active': False}, {'label': 'Grid View', 'url': f'/timeline/month/{year}/{month}', 'active': False}],
             photos=imgs,
             manifests={"main_gallery": store.build_manifest(imgs)},
         )
@@ -4484,6 +4491,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                     "title": folder_name,
                     "subtitle": f"{len(items)} items",
                     "url": f"/folder/{prefix + folder_name}",
+                    "places_url": f"/places/folder/{prefix + folder_name}",
                     "heroes": items,
                     "tags": store.get_top_tags(items),
                 }
@@ -4523,6 +4531,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                         "title": f"#{tag_name}",
                         "subtitle": f"{len(imgs)} items",
                         "url": f"/tags/{tag_name}",
+                        "places_url": f"/places/tags/{tag_name}",
                         "heroes": imgs,
                         "tags": [],
                     }
