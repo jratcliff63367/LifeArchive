@@ -64,6 +64,7 @@ class PlacesService:
                 "selected_node": None,
                 "sidebar_html": "<div class='places-empty'>No geotagged photos exist in this scope yet.</div>",
                 "gallery_items": [],
+                "all_place_card": None,
                 "selected_path": [],
                 "stats": {"geotagged_count": 0, "leaf_count": 0},
                 "leaf_cards": [],
@@ -73,12 +74,14 @@ class PlacesService:
         selected_node = nodes[resolved_selected]
         gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit, selected_node=selected_node, context=context)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
+        all_place_card = self._build_all_place_card(selected_node, context=context)
         return {
             "context": context,
             "selected_node_id": resolved_selected,
             "selected_node": self._serialize_node(selected_node),
             "sidebar_html": self._render_sidebar_html(nodes, root_id, resolved_selected),
             "gallery_items": gallery_items,
+            "all_place_card": all_place_card,
             "selected_path": [self._serialize_node(nodes[nid]) for nid in self._path_to_root(nodes, resolved_selected)],
             "stats": {
                 "geotagged_count": payload["geotagged_count"],
@@ -151,6 +154,50 @@ class PlacesService:
             'back': (f"{context.scope_url}?node={quote(selected_node.node_id, safe='')}" if context and selected_node else '/places'),
         }
         return '/places_lightbox?' + urlencode(params)
+
+    def _build_all_place_card(self, selected_node: PlaceNode | None, context: PlacesContext | None = None, mosaic_limit: int = 16) -> dict[str, Any] | None:
+        if selected_node is None:
+            return None
+        all_items = self._dedupe_items(selected_node.item_refs or [])
+        if not all_items:
+            return None
+
+        clusters = self._cluster_items_by_time(all_items, threshold_seconds=20)
+        reps: list[dict[str, Any]] = []
+        for cluster in clusters:
+            rep = self.choose_best_item(cluster) or sorted(cluster, key=self._hero_sort_key, reverse=True)[0]
+            reps.append(dict(rep))
+        reps.sort(key=self._hero_sort_key, reverse=True)
+
+        cover_items = []
+        for rep in reps[:mosaic_limit]:
+            sha1 = str(rep.get('sha1') or '').strip()
+            if sha1:
+                cover_items.append({'sha1': sha1})
+
+        title = f"All Photos at {selected_node.label}"
+        subtitle = f"{len(all_items)} geotagged photo" + ('' if len(all_items) == 1 else 's')
+        primary_href = self._build_bucket_lightbox_href(
+            all_items,
+            reps[0] if reps else all_items[0],
+            title,
+            selected_node=selected_node,
+            context=context,
+        )
+        thumb_href = self._build_bucket_page_href(
+            all_items,
+            title,
+            selected_node=selected_node,
+            context=context,
+        )
+        return {
+            'title': title,
+            'subtitle': subtitle,
+            'cover_items': cover_items,
+            'primary_href': primary_href,
+            'thumb_href': thumb_href,
+            'count': len(all_items),
+        }
 
     def _parse_dt(self, value: Any) -> datetime | None:
         if not value:
