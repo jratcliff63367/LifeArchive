@@ -996,8 +996,7 @@ HTML_TEMPLATE = r"""
                             <div class="places-all-sub">{{ places_view.all_place_card.subtitle }}</div>
                         </div>
                         <div class="places-all-actions">
-                            <a class="places-all-btn primary" href="{{ places_view.all_place_card.primary_href }}">🖼 Open All</a>
-                            <a class="places-all-btn secondary" href="{{ places_view.all_place_card.thumb_href }}">Browse Thumbnails</a>
+                            <a class="places-all-btn primary" href="{{ places_view.all_place_card.thumb_href }}">Browse Thumbnails</a>
                         </div>
                     </div>
                     {% if places_view.all_place_card.cover_items %}
