@@ -3756,7 +3756,13 @@ def create_app(config: ArchiveConfig) -> Flask:
         for item in items:
             item["_hero_score"] = store.get_hero_score(item)
         node = request.args.get("node")
-        view = places.places_get_view(PlacesContext(scope_type=scope_type, title=context_title, breadcrumb=breadcrumb, scope_url=scope_url), items, selected_node_id=node)
+        collapsed_node = request.args.get("collapse")
+        view = places.places_get_view(
+            PlacesContext(scope_type=scope_type, title=context_title, breadcrumb=breadcrumb, scope_url=scope_url),
+            items,
+            selected_node_id=node,
+            collapsed_node_id=collapsed_node,
+        )
 
         manifests = {}
         all_place_card = view.get("all_place_card") if isinstance(view, dict) else None
