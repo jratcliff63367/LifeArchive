@@ -122,6 +122,11 @@ def init_db(conn):
 
     conn.commit()
 
+def load_existing_versions(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT sha1, model_version FROM image_face_summary")
+    return {str(sha1): (model_version or "") for sha1, model_version in cur.fetchall()}
+
 # ------------------------------------------------------------
 # IMAGE NORMALIZATION
 # ------------------------------------------------------------
@@ -263,12 +268,25 @@ def main():
     out_conn = sqlite3.connect(OUTPUT_DB)
     init_db(out_conn)
 
+    existing_versions = load_existing_versions(out_conn)
+    print(f"Loaded {len(existing_versions)} existing face-summary rows")
+
     cur = archive_conn.cursor()
     print("Reading archive index...")
     cur.execute("SELECT sha1, rel_fqn FROM media WHERE is_deleted = 0")
-    rows = cur.fetchall()
+    all_rows = cur.fetchall()
+
+    rows = []
+    skipped_existing = 0
+    for sha1, rel_path in all_rows:
+        if existing_versions.get(str(sha1), "") == MODEL_VERSION:
+            skipped_existing += 1
+            continue
+        rows.append((sha1, rel_path))
 
     total = len(rows)
+    print(f"Found {len(all_rows)} active images total")
+    print(f"Skipping {skipped_existing} already scored with model {MODEL_VERSION}")
     print(f"Found {total} images to analyze")
     print(f"Detection max dimension: {DETECTION_MAX_DIM}")
     print(f"Upscale small images: {UPSCALE_SMALL_IMAGES}")
@@ -398,6 +416,7 @@ def main():
     print(f"Images with faces: {with_faces}")
     print(f"Total faces detected: {total_faces}")
     print(f"Unreadable: {unreadable}")
+    print(f"Skipped existing: {skipped_existing}")
     print(f"Duration: {duration/60:.1f} minutes")
 
 if __name__ == "__main__":

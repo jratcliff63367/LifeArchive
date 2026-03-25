@@ -112,6 +112,11 @@ def init_db(conn):
 
     conn.commit()
 
+def load_existing_versions(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT sha1, model_version FROM image_scores")
+    return {str(sha1): (model_version or "") for sha1, model_version in cur.fetchall()}
+
 
 # ------------------------------------------------------------
 # MAIN
@@ -126,15 +131,26 @@ def main():
     out_conn = sqlite3.connect(OUTPUT_DB)
 
     init_db(out_conn)
+    existing_versions = load_existing_versions(out_conn)
+    print(f"Loaded {len(existing_versions)} existing technical-score rows")
 
     cur = archive_conn.cursor()
 
     print("Reading archive index...")
     cur.execute("SELECT sha1, rel_fqn FROM media WHERE is_deleted=0")
 
-    rows = cur.fetchall()
+    all_rows = cur.fetchall()
+    rows = []
+    skipped_existing = 0
+    for sha1, rel_fqn in all_rows:
+        if existing_versions.get(str(sha1), "") == MODEL_VERSION:
+            skipped_existing += 1
+            continue
+        rows.append((sha1, rel_fqn))
     total = len(rows)
 
+    print(f"Found {len(all_rows)} active images total")
+    print(f"Skipping {skipped_existing} already scored with model {MODEL_VERSION}")
     print(f"Found {total} images to score")
 
     start_time = time.time()
@@ -204,6 +220,7 @@ def main():
 
     print("\n--- COMPLETE ---")
     print(f"Processed: {processed}")
+    print(f"Skipped existing: {skipped_existing}")
     print(f"Duration: {duration/60:.1f} minutes")
 
 
