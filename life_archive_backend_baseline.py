@@ -719,27 +719,56 @@ HTML_TEMPLATE = r"""
         .places-leaf-body { padding: 12px; }
         .places-leaf-title { font-weight:800; margin-bottom:4px; }
         .places-leaf-sub { color:#999; font-size:0.84em; font-weight:700; }
-        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #31405f; background: #08101d; min-height: 420px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); }
-        .places-map-surface { position: relative; width: 100%; min-height: 420px; background: radial-gradient(circle at 22% 16%, rgba(84,117,177,0.38), rgba(8,16,29,1) 58%), linear-gradient(180deg, #11233d 0%, #0a1425 100%); }
-        .places-map-canvas { width: 100%; height: 420px; display: block; cursor: grab; user-select: none; touch-action: none; }
-        .places-map-canvas.dragging { cursor: grabbing; }
-        .places-map-controls { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 4; }
+        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #31405f; background: #08101d; min-height: 460px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); }
+        .places-map-surface { position: relative; width: 100%; min-height: 460px; background: #0b1220; }
+        .places-real-map { position: relative; width: 100%; height: 460px; overflow: hidden; background: #0c1422; cursor: grab; }
+        .places-map-tile-layer { position: absolute; inset: 0; overflow: hidden; }
+        .places-map-tile { position: absolute; width: 256px; height: 256px; user-select: none; -webkit-user-drag: none; }
+        .places-map-grid-fallback {
+            position: absolute; inset: 0;
+            background:
+                linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px),
+                linear-gradient(180deg, #15263f 0%, #0a1425 100%);
+            background-size: 64px 64px, 64px 64px, 100% 100%;
+        }
+        .places-map-no-tiles {
+            position: absolute; top: 18px; left: 18px; z-index: 6;
+            background: rgba(8,12,18,0.88); color: #d8e5ff;
+            border: 1px solid rgba(97,121,164,0.65);
+            border-radius: 12px; padding: 10px 12px; max-width: 360px;
+            font-size: 0.86em; line-height: 1.35;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.28);
+        }
+        .places-map-no-tiles code { color: #fff; }
+        .places-map-marker-layer { position: absolute; inset: 0; pointer-events: none; }
+        .places-map-marker { position: absolute; transform: translate(-50%, -50%); border-radius: 999px; }
+        .places-map-marker.child {
+            width: 12px; height: 12px;
+            background: rgba(185, 214, 255, 0.92);
+            border: 2px solid rgba(11,16,24,0.95);
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
+        }
+        .places-map-marker.selected {
+            width: 18px; height: 18px;
+            background: #ff6a6a;
+            border: 4px solid #fff;
+            box-shadow: 0 0 0 10px rgba(255,106,106,0.20), 0 0 0 22px rgba(255,106,106,0.08);
+        }
+        .places-map-mini { position:absolute; top:18px; left:18px; width: 180px; height: 110px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(97,121,164,0.65); background: rgba(6,10,16,0.55); box-shadow: 0 10px 28px rgba(0,0,0,0.28); z-index: 4; backdrop-filter: blur(4px); pointer-events: none; }
+        .places-map-mini svg { width:100%; height:100%; display:block; }
+        .places-map-badge { position:absolute; left:20px; top:136px; background: rgba(9,12,18,0.84); border: 1px solid rgba(97,121,164,0.55); color:#cfe0ff; border-radius: 999px; padding: 7px 11px; font-size: 0.78em; font-weight: 800; z-index:6; }
+        .places-map-controls { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 6; }
         .places-map-btn { border: 1px solid #516791; background: rgba(10,16,27,0.90); color: #fff; border-radius: 10px; width: 40px; height: 40px; font-size: 1.2em; font-weight: 800; cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,0.28); }
         .places-map-btn:hover { background: rgba(24,30,42,0.95); }
-        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(9,12,18,0.90); border:1px solid #3d4e70; border-radius: 14px; padding: 16px 18px; min-width: 250px; z-index: 4; box-shadow: 0 14px 40px rgba(0,0,0,0.30); }
+        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(9,12,18,0.92); border:1px solid #3d4e70; border-radius: 14px; padding: 16px 18px; min-width: 250px; z-index: 6; box-shadow: 0 14px 40px rgba(0,0,0,0.30); }
         .places-map-title { font-size:1.45em; font-weight:900; margin:0 0 4px; }
         .places-map-sub { color:#b0b0b0; font-size:0.95em; font-weight:700; }
         .places-map-meta { margin-top: 8px; color: #9eb4d8; font-size: 0.82em; font-weight: 700; letter-spacing: 0.01em; }
-        .places-map-mini { position:absolute; top:18px; left:18px; width: 160px; height: 88px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(97,121,164,0.65); background: rgba(6,10,16,0.50); box-shadow: 0 10px 28px rgba(0,0,0,0.28); z-index: 4; backdrop-filter: blur(4px); }
-        .places-map-mini svg { width:100%; height:100%; display:block; }
-        .places-map-badge { position:absolute; left:20px; top:116px; background: rgba(9,12,18,0.84); border: 1px solid rgba(97,121,164,0.55); color:#cfe0ff; border-radius: 999px; padding: 7px 11px; font-size: 0.78em; font-weight: 800; z-index:4; }
-        .places-map-hint { position:absolute; right:20px; bottom:18px; color: rgba(255,255,255,0.58); font-size: 0.78em; font-weight:700; z-index:4; text-shadow: 0 1px 1px rgba(0,0,0,0.35); }
-        .places-map-label { fill: rgba(226,235,255,0.72); font-size: 18px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; pointer-events: none; }
-        .places-map-label.water { fill: rgba(151,187,255,0.38); font-size: 15px; font-style: italic; letter-spacing: 0.08em; }
-        .places-map-crosshair { stroke: rgba(255,255,255,0.28); stroke-width: 1.2; pointer-events:none; }
-        .places-map-focus-ring { fill: none; stroke: rgba(255,255,255,0.30); stroke-width: 2; stroke-dasharray: 5 6; pointer-events:none; }
-        .places-map-marker-core { fill: #ff5f5f; stroke: #ffffff; stroke-width: 3; }
-        .places-map-marker-pulse { fill: rgba(255,95,95,0.16); stroke: rgba(255,255,255,0.12); stroke-width: 1.2; }
+        .places-map-hint { position:absolute; right:20px; bottom:18px; color: rgba(255,255,255,0.65); font-size: 0.78em; font-weight:700; z-index:6; text-shadow: 0 1px 1px rgba(0,0,0,0.35); }
+        .places-mini-world-bg { fill: url(#places-mini-ocean); }
+        .places-mini-land { fill: rgba(118,165,102,0.78); stroke: rgba(255,255,255,0.12); stroke-width: 1; }
+        .places-mini-marker { fill: #ff7c7c; stroke: #fff; stroke-width: 3; }
         .places-empty { color:#aaa; padding: 18px; background: rgba(255,255,255,0.03); border: 1px dashed #383838; border-radius: 14px; }
         @media (max-width: 1100px) {
             .places-layout { grid-template-columns: 1fr; }
@@ -1048,6 +1077,17 @@ HTML_TEMPLATE = r"""
 
                 <div class="places-map-card">
                     <div class="places-map-surface">
+                        <div class="places-real-map" id="places-real-map">
+                            <div class="places-map-grid-fallback"></div>
+                            <div class="places-map-tile-layer" id="places-map-tile-layer"></div>
+                            <div class="places-map-marker-layer" id="places-map-marker-layer"></div>
+                            {% if not places_map_view.tiles_available %}
+                            <div class="places-map-no-tiles">
+                                <strong>Local map tiles not found.</strong><br>
+                                Put tiles under <code>_web_layout/map_tiles/{z}/{x}/{y}.png</code> inside your archive root.
+                            </div>
+                            {% endif %}
+                        </div>
                         <div class="places-map-mini"><svg id="places-map-mini" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg></div>
                         <div class="places-map-badge">{{ places_map_view.level if places_map_view else 'place' }}</div>
                         <div class="places-map-controls">
@@ -1055,7 +1095,6 @@ HTML_TEMPLATE = r"""
                             <button type="button" class="places-map-btn" data-map-action="zoom-out" aria-label="Zoom out">−</button>
                             <button type="button" class="places-map-btn" data-map-action="reset" aria-label="Reset map">⟳</button>
                         </div>
-                        <svg id="places-map-canvas" class="places-map-canvas" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg>
                         <div class="places-map-hint">Drag to pan • Wheel to zoom{% if places_map_view and places_map_view.child_markers %} • {{ places_map_view.child_markers|length }} child markers{% endif %}</div>
                     </div>
                     <div class="places-map-overlay">
@@ -1064,6 +1103,150 @@ HTML_TEMPLATE = r"""
                         {% if places_map_view and places_map_view.coord_text %}
                         <div class="places-map-meta">{{ places_map_view.coord_text }}</div>
                         {% endif %}
+                    </div>
+                </div>
+                {% if places_map_view %}
+                <script>
+                (function() {
+                    if (window.__placesRealLocalMapInit) return;
+                    window.__placesRealLocalMapInit = true;
+
+                    const cfg = {{ places_map_view | tojson | safe }};
+                    const mapEl = document.getElementById('places-real-map');
+                    const tileLayer = document.getElementById('places-map-tile-layer');
+                    const markerLayer = document.getElementById('places-map-marker-layer');
+                    const miniSvg = document.getElementById('places-map-mini');
+                    if (!mapEl || !tileLayer || !markerLayer || !cfg) return;
+
+                    const TILE_SIZE = 256;
+                    const MIN_ZOOM = 1;
+                    const MAX_ZOOM = 15;
+
+                    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+                    function lonLatToGlobalPixels(lon, lat, zoom) {
+                        const scale = TILE_SIZE * Math.pow(2, zoom);
+                        const x = (Number(lon) + 180) / 360 * scale;
+                        const sin = Math.sin(Number(lat) * Math.PI / 180);
+                        const y = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale;
+                        return { x, y };
+                    }
+                    let zoom = clamp(Math.round(Number(cfg.zoom || 3)), MIN_ZOOM, MAX_ZOOM);
+                    let center = lonLatToGlobalPixels(cfg.center_lon || 0, cfg.center_lat || 0, zoom);
+                    const initialState = { zoom, centerX: center.x, centerY: center.y };
+                    let dragging = false;
+                    let lastX = 0;
+                    let lastY = 0;
+
+                    function tileUrl(z, x, y) {
+                        return String(cfg.tile_url_template || '/map_tiles/{z}/{x}/{y}.png').replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
+                    }
+                    function drawMini() {
+                        if (!miniSvg) return;
+                        while (miniSvg.firstChild) miniSvg.removeChild(miniSvg.firstChild);
+                        const NS = 'http://www.w3.org/2000/svg';
+                        const make = (tag, attrs) => {
+                            const el = document.createElementNS(NS, tag);
+                            Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, String(v)));
+                            return el;
+                        };
+                        const defs = make('defs', {});
+                        const grad = make('linearGradient', { id: 'places-mini-ocean', x1: '0%', y1: '0%', x2: '0%', y2: '100%' });
+                        grad.appendChild(make('stop', { offset: '0%', 'stop-color': '#183459' }));
+                        grad.appendChild(make('stop', { offset: '100%', 'stop-color': '#0a1425' }));
+                        defs.appendChild(grad);
+                        miniSvg.appendChild(defs);
+                        miniSvg.appendChild(make('rect', { x: 0, y: 0, width: 1000, height: 500, class: 'places-mini-world-bg' }));
+                        const land = [[[-168,72],[-150,68],[-140,60],[-130,55],[-126,49],[-123,42],[-118,34],[-111,29],[-104,24],[-97,20],[-90,18],[-84,20],[-80,25],[-75,33],[-69,44],[-61,49],[-57,54],[-63,60],[-78,70],[-110,72],[-135,73]],[[-82,12],[-76,8],[-72,0],[-70,-10],[-66,-20],[-62,-31],[-58,-41],[-52,-50],[-44,-54],[-40,-45],[-44,-30],[-50,-18],[-58,-5],[-66,3],[-74,9]],[[-10,35],[-6,43],[2,49],[10,55],[20,60],[35,63],[50,64],[65,62],[85,58],[105,54],[122,48],[135,42],[145,35],[150,24],[144,15],[130,8],[118,12],[108,18],[96,22],[82,22],[70,18],[60,14],[48,18],[38,24],[28,30],[18,38],[8,44],[-2,43],[-8,39]],[[-18,36],[-6,37],[6,35],[18,30],[27,23],[33,12],[37,2],[36,-10],[30,-20],[24,-28],[16,-34],[8,-35],[0,-30],[-6,-18],[-10,-5],[-13,8],[-16,20]],[[112,-11],[120,-18],[132,-24],[142,-30],[151,-33],[154,-40],[147,-43],[136,-39],[126,-33],[118,-26],[113,-18]],[[47,-13],[50,-18],[49,-23],[46,-25],[43,-20],[44,-15]]];
+                        function proj(lon, lat) { return [((Number(lon)+180)/360)*1000, ((90-Number(lat))/180)*500]; }
+                        function path(points) { const c = points.map(([lon, lat]) => proj(lon, lat)); return 'M ' + c.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(' L ') + ' Z'; }
+                        land.forEach(shape => miniSvg.appendChild(make('path', { d: path(shape), class: 'places-mini-land' })));
+                        if (cfg.marker_lat != null && cfg.marker_lon != null) {
+                            const [x, y] = proj(cfg.marker_lon, cfg.marker_lat);
+                            miniSvg.appendChild(make('circle', { cx: x, cy: y, r: 8, class: 'places-mini-marker' }));
+                        }
+                    }
+                    function render() {
+                        const width = mapEl.clientWidth;
+                        const height = mapEl.clientHeight;
+                        const worldTiles = Math.pow(2, zoom);
+                        const worldPx = TILE_SIZE * worldTiles;
+                        center.x = ((center.x % worldPx) + worldPx) % worldPx;
+                        center.y = clamp(center.y, 0, worldPx);
+                        const leftPx = center.x - width / 2;
+                        const topPx = center.y - height / 2;
+                        const startX = Math.floor(leftPx / TILE_SIZE);
+                        const endX = Math.floor((leftPx + width) / TILE_SIZE);
+                        const startY = Math.floor(topPx / TILE_SIZE);
+                        const endY = Math.floor((topPx + height) / TILE_SIZE);
+                        tileLayer.innerHTML = '';
+                        for (let tx = startX; tx <= endX; tx++) {
+                            for (let ty = startY; ty <= endY; ty++) {
+                                if (ty < 0 || ty >= worldTiles) continue;
+                                const wrappedX = ((tx % worldTiles) + worldTiles) % worldTiles;
+                                const img = document.createElement('img');
+                                img.className = 'places-map-tile';
+                                img.alt = '';
+                                img.draggable = false;
+                                img.loading = 'lazy';
+                                img.src = tileUrl(zoom, wrappedX, ty);
+                                img.style.left = `${tx * TILE_SIZE - leftPx}px`;
+                                img.style.top = `${ty * TILE_SIZE - topPx}px`;
+                                tileLayer.appendChild(img);
+                            }
+                        }
+                        markerLayer.innerHTML = '';
+                        const children = Array.isArray(cfg.child_markers) ? cfg.child_markers : [];
+                        for (const child of children) {
+                            const pt = lonLatToGlobalPixels(child.lon, child.lat, zoom);
+                            let px = pt.x - leftPx; let py = pt.y - topPx;
+                            while (px < -TILE_SIZE) px += worldPx;
+                            while (px > width + TILE_SIZE) px -= worldPx;
+                            if (py < -24 || py > height + 24) continue;
+                            const el = document.createElement('div');
+                            el.className = 'places-map-marker child';
+                            el.title = `${child.label} (${child.photo_count})`;
+                            el.style.left = `${px}px`; el.style.top = `${py}px`;
+                            markerLayer.appendChild(el);
+                        }
+                        if (cfg.marker_lat != null && cfg.marker_lon != null) {
+                            const pt = lonLatToGlobalPixels(cfg.marker_lon, cfg.marker_lat, zoom);
+                            let px = pt.x - leftPx; let py = pt.y - topPx;
+                            while (px < -TILE_SIZE) px += worldPx;
+                            while (px > width + TILE_SIZE) px -= worldPx;
+                            const el = document.createElement('div');
+                            el.className = 'places-map-marker selected';
+                            el.style.left = `${px}px`; el.style.top = `${py}px`;
+                            markerLayer.appendChild(el);
+                        }
+                    }
+                    function reset() { zoom = initialState.zoom; center = { x: initialState.centerX, y: initialState.centerY }; render(); }
+                    function zoomBy(delta) {
+                        const oldZoom = zoom; const newZoom = clamp(oldZoom + delta, MIN_ZOOM, MAX_ZOOM);
+                        if (newZoom === oldZoom) return;
+                        const factor = Math.pow(2, newZoom - oldZoom);
+                        center = { x: center.x * factor, y: center.y * factor };
+                        zoom = newZoom; render();
+                    }
+                    mapEl.addEventListener('mousedown', (ev) => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; });
+                    window.addEventListener('mousemove', (ev) => {
+                        if (!dragging) return;
+                        center.x -= (ev.clientX - lastX); center.y -= (ev.clientY - lastY);
+                        lastX = ev.clientX; lastY = ev.clientY; render();
+                    });
+                    window.addEventListener('mouseup', () => { dragging = false; });
+                    mapEl.addEventListener('wheel', (ev) => { ev.preventDefault(); zoomBy(ev.deltaY < 0 ? 1 : -1); }, { passive: false });
+                    document.querySelectorAll('[data-map-action]').forEach((btn) => {
+                        btn.addEventListener('click', () => {
+                            const action = btn.getAttribute('data-map-action');
+                            if (action === 'zoom-in') zoomBy(1);
+                            else if (action === 'zoom-out') zoomBy(-1);
+                            else if (action === 'reset') reset();
+                        });
+                    });
+                    drawMini(); render(); window.addEventListener('resize', render);
+                })();
+                </script>
+                {% endif %}
                     </div>
                 </div>
                 {% if places_map_view %}
@@ -2367,6 +2550,7 @@ class ArchiveConfig:
     archive_root: Path
     db_path: Path
     assets_dir: Path
+    map_tiles_dir: Path
     thumb_dir: Path
     composite_dir: Path
     geo_db_path: Path
@@ -3273,6 +3457,7 @@ def make_config(archive_root: str, theme_color: str = DEFAULT_THEME_COLOR) -> Ar
         archive_root=root,
         db_path=root / "archive_index.db",
         assets_dir=root / "_web_layout" / "assets",
+        map_tiles_dir=root / "_web_layout" / "map_tiles",
         thumb_dir=root / "_thumbs",
         composite_dir=root / "_thumbs" / "_composites",
         geo_db_path=root / "geo_tags.sqlite",
@@ -3955,6 +4140,8 @@ def create_app(config: ArchiveConfig) -> Flask:
             ]
 
         places_map_view = places_map_service.build_map_view(selected_node_for_map, context_title)
+        places_map_view["tile_url_template"] = "/map_tiles/{z}/{x}/{y}.png"
+        places_map_view["tiles_available"] = bool(config.map_tiles_dir.exists())
 
         action_links = [make_places_action(scope_url)]
         if extra_actions:
@@ -4938,6 +5125,13 @@ def create_app(config: ArchiveConfig) -> Flask:
     @app.route("/assets/<path:filename>")
     def serve_assets(filename: str):
         return send_from_directory(config.assets_dir, filename)
+
+    @app.route("/map_tiles/<int:z>/<int:x>/<int:y>.png")
+    def serve_map_tile(z: int, x: int, y: int):
+        tile_path = config.map_tiles_dir / str(z) / str(x) / f"{y}.png"
+        if tile_path.exists():
+            return send_file(tile_path)
+        return ("", 404)
 
     return app
 

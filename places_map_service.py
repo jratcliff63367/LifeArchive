@@ -11,7 +11,7 @@ class PlacesMapService:
     """
 
     LEVEL_ZOOM = {
-        "root": 1.2,
+        "root": 1,
         "country": 2.2,
         "state": 3.2,
         "province": 3.2,
