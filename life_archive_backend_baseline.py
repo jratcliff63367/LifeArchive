@@ -55,6 +55,7 @@ from flask import Flask, jsonify, render_template_string, request, send_file, se
 from PIL import Image, ImageOps
 
 from places_service import PlacesContext, PlacesService
+from places_map_service import PlacesMapService
 
 
 # ---------------------------------------------------------------------------
@@ -718,9 +719,14 @@ HTML_TEMPLATE = r"""
         .places-leaf-body { padding: 12px; }
         .places-leaf-title { font-weight:800; margin-bottom:4px; }
         .places-leaf-sub { color:#999; font-size:0.84em; font-weight:700; }
-        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #2f2f2f; background: #111; min-height: 290px; }
-        .places-map-card img { width:100%; height: 100%; min-height: 290px; object-fit: cover; opacity: 0.86; display:block; }
-        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(13,13,13,0.88); border:1px solid #373737; border-radius: 14px; padding: 16px 18px; min-width: 240px; }
+        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #2f2f2f; background: #0c1220; min-height: 360px; }
+        .places-map-surface { position: relative; width: 100%; min-height: 360px; background: radial-gradient(circle at 30% 20%, rgba(74,96,142,0.35), rgba(12,18,32,1) 60%); }
+        .places-map-canvas { width: 100%; height: 360px; display: block; cursor: grab; user-select: none; touch-action: none; }
+        .places-map-canvas.dragging { cursor: grabbing; }
+        .places-map-controls { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 3; }
+        .places-map-btn { border: 1px solid #3d4e70; background: rgba(14,18,26,0.90); color: #fff; border-radius: 10px; width: 40px; height: 40px; font-size: 1.2em; font-weight: 800; cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,0.28); }
+        .places-map-btn:hover { background: rgba(24,30,42,0.95); }
+        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(13,13,13,0.88); border:1px solid #373737; border-radius: 14px; padding: 16px 18px; min-width: 240px; z-index: 3; }
         .places-map-title { font-size:1.45em; font-weight:900; margin:0 0 4px; }
         .places-map-sub { color:#b0b0b0; font-size:0.95em; font-weight:700; }
         .places-empty { color:#aaa; padding: 18px; background: rgba(255,255,255,0.03); border: 1px dashed #383838; border-radius: 14px; }
@@ -1030,12 +1036,93 @@ HTML_TEMPLATE = r"""
                 {% endif %}
 
                 <div class="places-map-card">
-                    <img src="/assets/hero-places-map.png" onerror="this.src='/assets/hero-places.png'">
+                    <div class="places-map-surface">
+                        <div class="places-map-controls">
+                            <button type="button" class="places-map-btn" data-map-action="zoom-in" aria-label="Zoom in">+</button>
+                            <button type="button" class="places-map-btn" data-map-action="zoom-out" aria-label="Zoom out">−</button>
+                            <button type="button" class="places-map-btn" data-map-action="reset" aria-label="Reset map">⟳</button>
+                        </div>
+                        <svg id="places-map-canvas" class="places-map-canvas" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg>
+                    </div>
                     <div class="places-map-overlay">
-                        <div class="places-map-title">{{ places_view.selected_node.label if places_view.selected_node else 'Places' }}</div>
-                        <div class="places-map-sub">{{ places_view.selected_node.photo_count if places_view.selected_node else 0 }} geotagged photo{{ '' if not places_view.selected_node or places_view.selected_node.photo_count == 1 else 's' }}</div>
+                        <div class="places-map-title">{{ places_map_view.title if places_map_view else (places_view.selected_node.label if places_view.selected_node else 'Places') }}</div>
+                        <div class="places-map-sub">{{ places_map_view.subtitle if places_map_view else (places_view.selected_node.photo_count if places_view.selected_node else 0) }}</div>
                     </div>
                 </div>
+                {% if places_map_view %}
+                <script>
+                (function() {
+                    if (window.__placesMapInitOnce) return;
+                    window.__placesMapInitOnce = true;
+                    const cfg = {{ places_map_view | tojson | safe }};
+                    const svg = document.getElementById('places-map-canvas');
+                    if (!svg || !cfg) return;
+                    const NS = 'http://www.w3.org/2000/svg';
+                    const WIDTH = 1000;
+                    const HEIGHT = 500;
+                    function project(lon, lat) {
+                        const x = ((Number(lon) + 180) / 360) * WIDTH;
+                        const y = ((90 - Number(lat)) / 180) * HEIGHT;
+                        return [x, y];
+                    }
+                    function make(tag, attrs) {
+                        const el = document.createElementNS(NS, tag);
+                        for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
+                        return el;
+                    }
+                    function pathFrom(points) {
+                        const coords = points.map(([lon, lat]) => project(lon, lat));
+                        let d = `M ${coords[0][0].toFixed(1)} ${coords[0][1].toFixed(1)}`;
+                        for (let i = 1; i < coords.length; i++) d += ` L ${coords[i][0].toFixed(1)} ${coords[i][1].toFixed(1)}`;
+                        return d + ' Z';
+                    }
+                    const root = make('g', {});
+                    const viewport = make('g', {});
+                    root.appendChild(viewport);
+                    viewport.appendChild(make('rect', {x:0,y:0,width:WIDTH,height:HEIGHT,fill:'#12233c'}));
+                    for (let lon = -150; lon <= 180; lon += 30) {
+                        const [x1, y1] = project(lon, -85); const [x2, y2] = project(lon, 85);
+                        viewport.appendChild(make('line', {x1,y1,x2,y2,stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
+                    }
+                    for (let lat = -60; lat <= 60; lat += 30) {
+                        const [x1, y1] = project(-180, lat); const [x2, y2] = project(180, lat);
+                        viewport.appendChild(make('line', {x1,y1,x2,y2,stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
+                    }
+                    const landShapes = [
+                        [[-168,72],[-150,68],[-140,60],[-130,55],[-126,49],[-123,42],[-118,34],[-111,29],[-104,24],[-97,20],[-90,18],[-84,20],[-80,25],[-75,33],[-69,44],[-61,49],[-57,54],[-63,60],[-78,70],[-110,72],[-135,73]],
+                        [[-82,12],[-76,8],[-72,0],[-70,-10],[-66,-20],[-62,-31],[-58,-41],[-52,-50],[-44,-54],[-40,-45],[-44,-30],[-50,-18],[-58,-5],[-66,3],[-74,9]],
+                        [[-10,35],[-6,43],[2,49],[10,55],[20,60],[35,63],[50,64],[65,62],[85,58],[105,54],[122,48],[135,42],[145,35],[150,24],[144,15],[130,8],[118,12],[108,18],[96,22],[82,22],[70,18],[60,14],[48,18],[38,24],[28,30],[18,38],[8,44],[-2,43],[-8,39]],
+                        [[-18,36],[-6,37],[6,35],[18,30],[27,23],[33,12],[37,2],[36,-10],[30,-20],[24,-28],[16,-34],[8,-35],[0,-30],[-6,-18],[-10,-5],[-13,8],[-16,20]],
+                        [[112,-11],[120,-18],[132,-24],[142,-30],[151,-33],[154,-40],[147,-43],[136,-39],[126,-33],[118,-26],[113,-18]],
+                        [[-54,60],[-46,64],[-38,68],[-30,72],[-24,76],[-26,80],[-40,82],[-50,78],[-56,72]],
+                        [[-180,-72],[-150,-74],[-120,-76],[-90,-77],[-60,-78],[-30,-79],[0,-79],[30,-79],[60,-78],[90,-77],[120,-76],[150,-74],[180,-72],[180,-85],[-180,-85]],
+                    ];
+                    for (const shape of landShapes) viewport.appendChild(make('path', {d:pathFrom(shape), fill:'#314d39', stroke:'rgba(255,255,255,0.16)', 'stroke-width':1.3}));
+                    if (cfg.marker_lat !== null && cfg.marker_lon !== null) {
+                        const [mx, my] = project(cfg.marker_lon, cfg.marker_lat);
+                        viewport.appendChild(make('circle', {cx:mx, cy:my, r:8, fill:'#ff5f5f', stroke:'#fff', 'stroke-width':3}));
+                        viewport.appendChild(make('circle', {cx:mx, cy:my, r:18, fill:'rgba(255,95,95,0.14)', stroke:'rgba(255,255,255,0.10)', 'stroke-width':1}));
+                    }
+                    svg.appendChild(root);
+                    let scale = Number(cfg.zoom || 2.5), offsetX = 0, offsetY = 0, dragging = false, lastX = 0, lastY = 0, resetState = null;
+                    function applyTransform() { viewport.setAttribute('transform', `translate(${offsetX.toFixed(2)} ${offsetY.toFixed(2)}) scale(${scale.toFixed(4)})`); }
+                    function centerOn(lon, lat) { const [x, y] = project(lon, lat); offsetX = WIDTH/2 - x*scale; offsetY = HEIGHT/2 - y*scale; applyTransform(); }
+                    function zoomBy(mult) { scale = Math.max(1.1, Math.min(16, scale * mult)); if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat); else applyTransform(); }
+                    if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat); else { scale = 1.4; centerOn(cfg.center_lon || 0, cfg.center_lat || 20); }
+                    resetState = { scale, offsetX, offsetY };
+                    svg.addEventListener('mousedown', ev => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; svg.classList.add('dragging'); });
+                    window.addEventListener('mousemove', ev => { if (!dragging) return; offsetX += ev.clientX - lastX; offsetY += ev.clientY - lastY; lastX = ev.clientX; lastY = ev.clientY; applyTransform(); });
+                    window.addEventListener('mouseup', () => { dragging = false; svg.classList.remove('dragging'); });
+                    svg.addEventListener('wheel', ev => { ev.preventDefault(); zoomBy(ev.deltaY < 0 ? 1.15 : 0.87); }, { passive:false });
+                    document.querySelectorAll('[data-map-action]').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const action = btn.getAttribute('data-map-action');
+                            if (action === 'zoom-in') zoomBy(1.2); else if (action === 'zoom-out') zoomBy(0.83); else if (action === 'reset' && resetState) { scale = resetState.scale; offsetX = resetState.offsetX; offsetY = resetState.offsetY; applyTransform(); }
+                        });
+                    });
+                })();
+                </script>
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -3701,6 +3788,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         store.choose_best_interesting_item,
         bucket_registrar=register_places_bucket,
     )
+    places_map_service = PlacesMapService()
     job_lock = threading.Lock()
     jobs: dict[str, dict[str, Any]] = {}
 
@@ -3756,13 +3844,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         for item in items:
             item["_hero_score"] = store.get_hero_score(item)
         node = request.args.get("node")
-        collapsed_node = request.args.get("collapse")
-        view = places.places_get_view(
-            PlacesContext(scope_type=scope_type, title=context_title, breadcrumb=breadcrumb, scope_url=scope_url),
-            items,
-            selected_node_id=node,
-            collapsed_node_id=collapsed_node,
-        )
+        view = places.places_get_view(PlacesContext(scope_type=scope_type, title=context_title, breadcrumb=breadcrumb, scope_url=scope_url), items, selected_node_id=node)
 
         manifests = {}
         all_place_card = view.get("all_place_card") if isinstance(view, dict) else None
@@ -3799,6 +3881,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         kwargs.setdefault('card_scopes', {})
         kwargs.setdefault('stash_categories', STASH_CATEGORIES)
         kwargs.setdefault('places_view', None)
+        kwargs.setdefault('places_map_view', None)
         kwargs.setdefault('auto_open', None)
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
