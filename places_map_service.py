@@ -11,6 +11,7 @@ class PlacesMapService:
     """
 
     LEVEL_ZOOM = {
+        "root": 1.2,
         "country": 2.2,
         "state": 3.2,
         "province": 3.2,
@@ -50,16 +51,31 @@ class PlacesMapService:
         if lat is not None and lon is not None:
             coord_text = f"{lat:.4f}, {lon:.4f}"
 
+        child_markers = []
+        for child in (selected_node.get("children_data") or []):
+            c_lat = self._safe_float(child.get("lat"))
+            c_lon = self._safe_float(child.get("lon"))
+            if c_lat is None or c_lon is None:
+                continue
+            child_markers.append({
+                "label": str(child.get("label") or ""),
+                "lat": c_lat,
+                "lon": c_lon,
+                "photo_count": int(child.get("photo_count") or 0),
+                "level": str(child.get("level") or "place"),
+            })
+
         return {
             "title": title,
             "subtitle": subtitle,
             "level": level,
             "center_lat": lat if lat is not None else 20.0,
             "center_lon": lon if lon is not None else 0.0,
-            "zoom": self._zoom_for_level(level),
+            "zoom": self._zoom_for_level(level if level else "root"),
             "marker_lat": lat,
             "marker_lon": lon,
             "coord_text": coord_text,
+            "child_markers": child_markers,
         }
 
     def _zoom_for_level(self, level: str) -> float:

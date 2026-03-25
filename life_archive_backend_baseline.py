@@ -1056,7 +1056,7 @@ HTML_TEMPLATE = r"""
                             <button type="button" class="places-map-btn" data-map-action="reset" aria-label="Reset map">⟳</button>
                         </div>
                         <svg id="places-map-canvas" class="places-map-canvas" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg>
-                        <div class="places-map-hint">Drag to pan • Wheel to zoom</div>
+                        <div class="places-map-hint">Drag to pan • Wheel to zoom{% if places_map_view and places_map_view.child_markers %} • {{ places_map_view.child_markers|length }} child markers{% endif %}</div>
                     </div>
                     <div class="places-map-overlay">
                         <div class="places-map-title">{{ places_map_view.title if places_map_view else (places_view.selected_node.label if places_view.selected_node else 'Places') }}</div>
@@ -1078,7 +1078,7 @@ HTML_TEMPLATE = r"""
                     const NS = 'http://www.w3.org/2000/svg';
                     const WIDTH = 1000;
                     const HEIGHT = 500;
-                    const FOCAL_X = WIDTH * 0.60;
+                    const FOCAL_X = WIDTH * 0.50;
                     const FOCAL_Y = HEIGHT * 0.46;
                     function project(lon, lat) {
                         const x = ((Number(lon) + 180) / 360) * WIDTH;
@@ -1150,6 +1150,18 @@ HTML_TEMPLATE = r"""
                         root.appendChild(crosshair);
                         const markerLayer = make('g', {});
                         viewport.appendChild(markerLayer);
+
+                        const children = Array.isArray(cfg.child_markers) ? cfg.child_markers : [];
+                        for (const child of children) {
+                            const pt = project(child.lon, child.lat);
+                            markerLayer.appendChild(make('circle', {
+                                cx:pt[0], cy:pt[1], r:5.5,
+                                fill:'rgba(185, 214, 255, 0.88)',
+                                stroke:'rgba(11,16,24,0.92)',
+                                'stroke-width':2
+                            }));
+                        }
+
                         if (cfg.marker_lat !== null && cfg.marker_lon !== null) {
                             const pt = project(cfg.marker_lon, cfg.marker_lat);
                             markerLayer.appendChild(make('circle', {cx:pt[0], cy:pt[1], r:16, class:'places-map-marker-pulse'}));
@@ -3927,7 +3939,22 @@ def create_app(config: ArchiveConfig) -> Flask:
                 for idx, cp in enumerate(all_place_card.get("cover_items", [])):
                     cp["lightbox_index"] = idx
 
-        places_map_view = places_map_service.build_map_view(view.get("selected_node"), context_title)
+        selected_node_for_map = view.get("selected_node")
+        if selected_node_for_map and view.get("leaf_cards"):
+            selected_node_for_map = dict(selected_node_for_map)
+            selected_node_for_map["children_data"] = [
+                {
+                    "label": leaf.get("label"),
+                    "photo_count": leaf.get("photo_count"),
+                    "level": leaf.get("level") or "place",
+                    "lat": leaf.get("lat"),
+                    "lon": leaf.get("lon"),
+                }
+                for leaf in view.get("leaf_cards", [])
+                if leaf.get("lat") is not None and leaf.get("lon") is not None
+            ]
+
+        places_map_view = places_map_service.build_map_view(selected_node_for_map, context_title)
 
         action_links = [make_places_action(scope_url)]
         if extra_actions:
