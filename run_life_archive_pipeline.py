@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Run the Life Archive post-ingest analysis pipeline in a sensible order.
 
 This wrapper intentionally does NOT try to be clever about per-script arguments.
