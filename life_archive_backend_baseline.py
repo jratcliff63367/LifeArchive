@@ -719,16 +719,27 @@ HTML_TEMPLATE = r"""
         .places-leaf-body { padding: 12px; }
         .places-leaf-title { font-weight:800; margin-bottom:4px; }
         .places-leaf-sub { color:#999; font-size:0.84em; font-weight:700; }
-        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #2f2f2f; background: #0c1220; min-height: 360px; }
-        .places-map-surface { position: relative; width: 100%; min-height: 360px; background: radial-gradient(circle at 30% 20%, rgba(74,96,142,0.35), rgba(12,18,32,1) 60%); }
-        .places-map-canvas { width: 100%; height: 360px; display: block; cursor: grab; user-select: none; touch-action: none; }
+        .places-map-card { position: relative; border-radius: 16px; overflow: hidden; border: 1px solid #31405f; background: #08101d; min-height: 420px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03); }
+        .places-map-surface { position: relative; width: 100%; min-height: 420px; background: radial-gradient(circle at 22% 16%, rgba(84,117,177,0.38), rgba(8,16,29,1) 58%), linear-gradient(180deg, #11233d 0%, #0a1425 100%); }
+        .places-map-canvas { width: 100%; height: 420px; display: block; cursor: grab; user-select: none; touch-action: none; }
         .places-map-canvas.dragging { cursor: grabbing; }
-        .places-map-controls { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 3; }
-        .places-map-btn { border: 1px solid #3d4e70; background: rgba(14,18,26,0.90); color: #fff; border-radius: 10px; width: 40px; height: 40px; font-size: 1.2em; font-weight: 800; cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,0.28); }
+        .places-map-controls { position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 4; }
+        .places-map-btn { border: 1px solid #516791; background: rgba(10,16,27,0.90); color: #fff; border-radius: 10px; width: 40px; height: 40px; font-size: 1.2em; font-weight: 800; cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,0.28); }
         .places-map-btn:hover { background: rgba(24,30,42,0.95); }
-        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(13,13,13,0.88); border:1px solid #373737; border-radius: 14px; padding: 16px 18px; min-width: 240px; z-index: 3; }
+        .places-map-overlay { position:absolute; left:20px; bottom:20px; background: rgba(9,12,18,0.90); border:1px solid #3d4e70; border-radius: 14px; padding: 16px 18px; min-width: 250px; z-index: 4; box-shadow: 0 14px 40px rgba(0,0,0,0.30); }
         .places-map-title { font-size:1.45em; font-weight:900; margin:0 0 4px; }
         .places-map-sub { color:#b0b0b0; font-size:0.95em; font-weight:700; }
+        .places-map-meta { margin-top: 8px; color: #9eb4d8; font-size: 0.82em; font-weight: 700; letter-spacing: 0.01em; }
+        .places-map-mini { position:absolute; top:18px; left:18px; width: 160px; height: 88px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(97,121,164,0.65); background: rgba(6,10,16,0.50); box-shadow: 0 10px 28px rgba(0,0,0,0.28); z-index: 4; backdrop-filter: blur(4px); }
+        .places-map-mini svg { width:100%; height:100%; display:block; }
+        .places-map-badge { position:absolute; left:20px; top:116px; background: rgba(9,12,18,0.84); border: 1px solid rgba(97,121,164,0.55); color:#cfe0ff; border-radius: 999px; padding: 7px 11px; font-size: 0.78em; font-weight: 800; z-index:4; }
+        .places-map-hint { position:absolute; right:20px; bottom:18px; color: rgba(255,255,255,0.58); font-size: 0.78em; font-weight:700; z-index:4; text-shadow: 0 1px 1px rgba(0,0,0,0.35); }
+        .places-map-label { fill: rgba(226,235,255,0.72); font-size: 18px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; pointer-events: none; }
+        .places-map-label.water { fill: rgba(151,187,255,0.38); font-size: 15px; font-style: italic; letter-spacing: 0.08em; }
+        .places-map-crosshair { stroke: rgba(255,255,255,0.28); stroke-width: 1.2; pointer-events:none; }
+        .places-map-focus-ring { fill: none; stroke: rgba(255,255,255,0.30); stroke-width: 2; stroke-dasharray: 5 6; pointer-events:none; }
+        .places-map-marker-core { fill: #ff5f5f; stroke: #ffffff; stroke-width: 3; }
+        .places-map-marker-pulse { fill: rgba(255,95,95,0.16); stroke: rgba(255,255,255,0.12); stroke-width: 1.2; }
         .places-empty { color:#aaa; padding: 18px; background: rgba(255,255,255,0.03); border: 1px dashed #383838; border-radius: 14px; }
         @media (max-width: 1100px) {
             .places-layout { grid-template-columns: 1fr; }
@@ -1037,29 +1048,38 @@ HTML_TEMPLATE = r"""
 
                 <div class="places-map-card">
                     <div class="places-map-surface">
+                        <div class="places-map-mini"><svg id="places-map-mini" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg></div>
+                        <div class="places-map-badge">{{ places_map_view.level if places_map_view else 'place' }}</div>
                         <div class="places-map-controls">
                             <button type="button" class="places-map-btn" data-map-action="zoom-in" aria-label="Zoom in">+</button>
                             <button type="button" class="places-map-btn" data-map-action="zoom-out" aria-label="Zoom out">−</button>
                             <button type="button" class="places-map-btn" data-map-action="reset" aria-label="Reset map">⟳</button>
                         </div>
                         <svg id="places-map-canvas" class="places-map-canvas" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet"></svg>
+                        <div class="places-map-hint">Drag to pan • Wheel to zoom</div>
                     </div>
                     <div class="places-map-overlay">
                         <div class="places-map-title">{{ places_map_view.title if places_map_view else (places_view.selected_node.label if places_view.selected_node else 'Places') }}</div>
                         <div class="places-map-sub">{{ places_map_view.subtitle if places_map_view else (places_view.selected_node.photo_count if places_view.selected_node else 0) }}</div>
+                        {% if places_map_view and places_map_view.coord_text %}
+                        <div class="places-map-meta">{{ places_map_view.coord_text }}</div>
+                        {% endif %}
                     </div>
                 </div>
                 {% if places_map_view %}
                 <script>
                 (function() {
-                    if (window.__placesMapInitOnce) return;
-                    window.__placesMapInitOnce = true;
+                    if (window.__placesMapInitV2) return;
+                    window.__placesMapInitV2 = true;
                     const cfg = {{ places_map_view | tojson | safe }};
                     const svg = document.getElementById('places-map-canvas');
+                    const mini = document.getElementById('places-map-mini');
                     if (!svg || !cfg) return;
                     const NS = 'http://www.w3.org/2000/svg';
                     const WIDTH = 1000;
                     const HEIGHT = 500;
+                    const FOCAL_X = WIDTH * 0.60;
+                    const FOCAL_Y = HEIGHT * 0.46;
                     function project(lon, lat) {
                         const x = ((Number(lon) + 180) / 360) * WIDTH;
                         const y = ((90 - Number(lat)) / 180) * HEIGHT;
@@ -1076,17 +1096,11 @@ HTML_TEMPLATE = r"""
                         for (let i = 1; i < coords.length; i++) d += ` L ${coords[i][0].toFixed(1)} ${coords[i][1].toFixed(1)}`;
                         return d + ' Z';
                     }
-                    const root = make('g', {});
-                    const viewport = make('g', {});
-                    root.appendChild(viewport);
-                    viewport.appendChild(make('rect', {x:0,y:0,width:WIDTH,height:HEIGHT,fill:'#12233c'}));
-                    for (let lon = -150; lon <= 180; lon += 30) {
-                        const [x1, y1] = project(lon, -85); const [x2, y2] = project(lon, 85);
-                        viewport.appendChild(make('line', {x1,y1,x2,y2,stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
-                    }
-                    for (let lat = -60; lat <= 60; lat += 30) {
-                        const [x1, y1] = project(-180, lat); const [x2, y2] = project(180, lat);
-                        viewport.appendChild(make('line', {x1,y1,x2,y2,stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
+                    function addLabel(layer, text, lon, lat, cls='places-map-label') {
+                        const [x, y] = project(lon, lat);
+                        const t = make('text', { x, y, class: cls, 'text-anchor': 'middle' });
+                        t.textContent = text;
+                        layer.appendChild(t);
                     }
                     const landShapes = [
                         [[-168,72],[-150,68],[-140,60],[-130,55],[-126,49],[-123,42],[-118,34],[-111,29],[-104,24],[-97,20],[-90,18],[-84,20],[-80,25],[-75,33],[-69,44],[-61,49],[-57,54],[-63,60],[-78,70],[-110,72],[-135,73]],
@@ -1095,31 +1109,83 @@ HTML_TEMPLATE = r"""
                         [[-18,36],[-6,37],[6,35],[18,30],[27,23],[33,12],[37,2],[36,-10],[30,-20],[24,-28],[16,-34],[8,-35],[0,-30],[-6,-18],[-10,-5],[-13,8],[-16,20]],
                         [[112,-11],[120,-18],[132,-24],[142,-30],[151,-33],[154,-40],[147,-43],[136,-39],[126,-33],[118,-26],[113,-18]],
                         [[-54,60],[-46,64],[-38,68],[-30,72],[-24,76],[-26,80],[-40,82],[-50,78],[-56,72]],
+                        [[47,-13],[50,-18],[49,-23],[46,-25],[43,-20],[44,-15]],
                         [[-180,-72],[-150,-74],[-120,-76],[-90,-77],[-60,-78],[-30,-79],[0,-79],[30,-79],[60,-78],[90,-77],[120,-76],[150,-74],[180,-72],[180,-85],[-180,-85]],
                     ];
-                    for (const shape of landShapes) viewport.appendChild(make('path', {d:pathFrom(shape), fill:'#314d39', stroke:'rgba(255,255,255,0.16)', 'stroke-width':1.3}));
-                    if (cfg.marker_lat !== null && cfg.marker_lon !== null) {
-                        const [mx, my] = project(cfg.marker_lon, cfg.marker_lat);
-                        viewport.appendChild(make('circle', {cx:mx, cy:my, r:8, fill:'#ff5f5f', stroke:'#fff', 'stroke-width':3}));
-                        viewport.appendChild(make('circle', {cx:mx, cy:my, r:18, fill:'rgba(255,95,95,0.14)', stroke:'rgba(255,255,255,0.10)', 'stroke-width':1}));
+                    const continentLabels = [['North America', -106, 47],['South America', -60, -18],['Europe', 16, 52],['Africa', 18, 10],['Asia', 92, 42],['Australia', 134, -26]];
+                    const waterLabels = [['Atlantic Ocean', -32, 12],['Pacific Ocean', -150, 4],['Pacific Ocean', 156, 0],['Indian Ocean', 82, -18]];
+                    function drawWorld(targetSvg, includeLabels) {
+                        while (targetSvg.firstChild) targetSvg.removeChild(targetSvg.firstChild);
+                        const defs = make('defs', {});
+                        const oceanGrad = make('linearGradient', { id: targetSvg.id + '-ocean', x1: '0%', y1: '0%', x2: '0%', y2: '100%' });
+                        oceanGrad.appendChild(make('stop', { offset: '0%', 'stop-color': '#183459' }));
+                        oceanGrad.appendChild(make('stop', { offset: '100%', 'stop-color': '#0a1425' }));
+                        defs.appendChild(oceanGrad);
+                        targetSvg.appendChild(defs);
+                        const root = make('g', {});
+                        const viewport = make('g', {});
+                        root.appendChild(viewport);
+                        viewport.appendChild(make('rect', {x:0,y:0,width:WIDTH,height:HEIGHT,fill:'url(#' + targetSvg.id + '-ocean)'}));
+                        for (let lon = -150; lon <= 180; lon += 30) {
+                            const p1 = project(lon, -85), p2 = project(lon, 85);
+                            viewport.appendChild(make('line', {x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
+                        }
+                        for (let lat = -60; lat <= 60; lat += 30) {
+                            const p1 = project(-180, lat), p2 = project(180, lat);
+                            viewport.appendChild(make('line', {x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],stroke:'rgba(255,255,255,0.10)','stroke-width':1}));
+                        }
+                        const landLayer = make('g', {});
+                        viewport.appendChild(landLayer);
+                        for (const shape of landShapes) landLayer.appendChild(make('path', {d:pathFrom(shape), fill:'#3e6743', stroke:'rgba(255,255,255,0.22)', 'stroke-width':1.4}));
+                        if (includeLabels) {
+                            const labelLayer = make('g', {});
+                            viewport.appendChild(labelLayer);
+                            continentLabels.forEach(v => addLabel(labelLayer, v[0], v[1], v[2]));
+                            waterLabels.forEach(v => addLabel(labelLayer, v[0], v[1], v[2], 'places-map-label water'));
+                        }
+                        const crosshair = make('g', {});
+                        crosshair.appendChild(make('line', {x1:FOCAL_X - 18, y1:FOCAL_Y, x2:FOCAL_X + 18, y2:FOCAL_Y, class:'places-map-crosshair'}));
+                        crosshair.appendChild(make('line', {x1:FOCAL_X, y1:FOCAL_Y - 18, x2:FOCAL_X, y2:FOCAL_Y + 18, class:'places-map-crosshair'}));
+                        crosshair.appendChild(make('circle', {cx:FOCAL_X, cy:FOCAL_Y, r:46, class:'places-map-focus-ring'}));
+                        root.appendChild(crosshair);
+                        const markerLayer = make('g', {});
+                        viewport.appendChild(markerLayer);
+                        if (cfg.marker_lat !== null && cfg.marker_lon !== null) {
+                            const pt = project(cfg.marker_lon, cfg.marker_lat);
+                            markerLayer.appendChild(make('circle', {cx:pt[0], cy:pt[1], r:16, class:'places-map-marker-pulse'}));
+                            markerLayer.appendChild(make('circle', {cx:pt[0], cy:pt[1], r:8, class:'places-map-marker-core'}));
+                        }
+                        targetSvg.appendChild(root);
+                        return { root, viewport };
                     }
-                    svg.appendChild(root);
+                    const mainLayers = drawWorld(svg, true);
+                    drawWorld(mini, false);
                     let scale = Number(cfg.zoom || 2.5), offsetX = 0, offsetY = 0, dragging = false, lastX = 0, lastY = 0, resetState = null;
-                    function applyTransform() { viewport.setAttribute('transform', `translate(${offsetX.toFixed(2)} ${offsetY.toFixed(2)}) scale(${scale.toFixed(4)})`); }
-                    function centerOn(lon, lat) { const [x, y] = project(lon, lat); offsetX = WIDTH/2 - x*scale; offsetY = HEIGHT/2 - y*scale; applyTransform(); }
-                    function zoomBy(mult) { scale = Math.max(1.1, Math.min(16, scale * mult)); if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat); else applyTransform(); }
-                    if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat); else { scale = 1.4; centerOn(cfg.center_lon || 0, cfg.center_lat || 20); }
+                    function applyTransform() { mainLayers.viewport.setAttribute('transform', 'translate(' + offsetX.toFixed(2) + ' ' + offsetY.toFixed(2) + ') scale(' + scale.toFixed(4) + ')'); }
+                    function centerOn(lon, lat) {
+                        const pt = project(lon, lat);
+                        offsetX = FOCAL_X - pt[0] * scale;
+                        offsetY = FOCAL_Y - pt[1] * scale;
+                        applyTransform();
+                    }
+                    function zoomBy(multiplier) {
+                        scale = Math.max(1.1, Math.min(18, scale * multiplier));
+                        if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat);
+                        else applyTransform();
+                    }
+                    if (cfg.marker_lat !== null && cfg.marker_lon !== null) centerOn(cfg.marker_lon, cfg.marker_lat);
+                    else { scale = 1.45; centerOn(cfg.center_lon || 0, cfg.center_lat || 20); }
                     resetState = { scale, offsetX, offsetY };
                     svg.addEventListener('mousedown', ev => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; svg.classList.add('dragging'); });
-                    window.addEventListener('mousemove', ev => { if (!dragging) return; offsetX += ev.clientX - lastX; offsetY += ev.clientY - lastY; lastX = ev.clientX; lastY = ev.clientY; applyTransform(); });
+                    window.addEventListener('mousemove', ev => { if (!dragging) return; offsetX += (ev.clientX - lastX); offsetY += (ev.clientY - lastY); lastX = ev.clientX; lastY = ev.clientY; applyTransform(); });
                     window.addEventListener('mouseup', () => { dragging = false; svg.classList.remove('dragging'); });
                     svg.addEventListener('wheel', ev => { ev.preventDefault(); zoomBy(ev.deltaY < 0 ? 1.15 : 0.87); }, { passive:false });
-                    document.querySelectorAll('[data-map-action]').forEach(btn => {
-                        btn.addEventListener('click', () => {
-                            const action = btn.getAttribute('data-map-action');
-                            if (action === 'zoom-in') zoomBy(1.2); else if (action === 'zoom-out') zoomBy(0.83); else if (action === 'reset' && resetState) { scale = resetState.scale; offsetX = resetState.offsetX; offsetY = resetState.offsetY; applyTransform(); }
-                        });
-                    });
+                    document.querySelectorAll('[data-map-action]').forEach(btn => btn.addEventListener('click', () => {
+                        const action = btn.getAttribute('data-map-action');
+                        if (action === 'zoom-in') zoomBy(1.2);
+                        else if (action === 'zoom-out') zoomBy(0.83);
+                        else if (action === 'reset' && resetState) { scale = resetState.scale; offsetX = resetState.offsetX; offsetY = resetState.offsetY; applyTransform(); }
+                    }));
                 })();
                 </script>
                 {% endif %}
@@ -3861,6 +3927,8 @@ def create_app(config: ArchiveConfig) -> Flask:
                 for idx, cp in enumerate(all_place_card.get("cover_items", [])):
                     cp["lightbox_index"] = idx
 
+        places_map_view = places_map_service.build_map_view(view.get("selected_node"), context_title)
+
         action_links = [make_places_action(scope_url)]
         if extra_actions:
             action_links.extend(extra_actions)
@@ -3871,6 +3939,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             breadcrumb=breadcrumb,
             action_links=action_links,
             places_view=view,
+            places_map_view=places_map_view,
             manifests=manifests,
         )
 

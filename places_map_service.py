@@ -12,18 +12,18 @@ class PlacesMapService:
 
     LEVEL_ZOOM = {
         "country": 2.2,
-        "state": 3.0,
-        "province": 3.0,
-        "region": 3.0,
-        "county": 3.8,
-        "city": 4.8,
-        "town": 4.8,
-        "village": 5.0,
-        "hamlet": 5.2,
-        "suburb": 5.6,
-        "road": 6.2,
-        "place": 6.0,
-        "coord": 6.0,
+        "state": 3.2,
+        "province": 3.2,
+        "region": 3.2,
+        "county": 4.4,
+        "city": 8.0,
+        "town": 8.5,
+        "village": 9.0,
+        "hamlet": 9.2,
+        "suburb": 9.6,
+        "road": 11.0,
+        "place": 10.5,
+        "coord": 10.5,
     }
 
     def build_map_view(self, selected_node: dict[str, Any] | None, context_title: str) -> dict[str, Any]:
@@ -46,6 +46,10 @@ class PlacesMapService:
         photo_count = int(selected_node.get("photo_count") or 0)
         subtitle = f"{photo_count} geotagged photo" + ("" if photo_count == 1 else "s")
 
+        coord_text = None
+        if lat is not None and lon is not None:
+            coord_text = f"{lat:.4f}, {lon:.4f}"
+
         return {
             "title": title,
             "subtitle": subtitle,
@@ -55,6 +59,7 @@ class PlacesMapService:
             "zoom": self._zoom_for_level(level),
             "marker_lat": lat,
             "marker_lon": lon,
+            "coord_text": coord_text,
         }
 
     def _zoom_for_level(self, level: str) -> float:
