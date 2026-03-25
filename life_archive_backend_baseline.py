@@ -1000,15 +1000,15 @@ HTML_TEMPLATE = r"""
                         </div>
                     </div>
                     {% if places_view.all_place_card.cover_items %}
-                    <a class="places-all-grid-link" href="{{ places_view.all_place_card.primary_href }}">
-                        <div class="places-all-grid-shell" style="--places-all-cols: {{ 4 if (places_view.all_place_card.cover_items|length) >= 4 else (places_view.all_place_card.cover_items|length if (places_view.all_place_card.cover_items|length) > 0 else 1) }}; {% set _cover_len = places_view.all_place_card.cover_items|length %}{% if _cover_len < 4 %}max-width: calc({{ _cover_len if _cover_len > 0 else 1 }} * 150px + {{ (_cover_len - 1) if _cover_len > 0 else 0 }} * 8px + 28px);{% endif %}">
-                            <div class="places-all-grid">
-                                {% for cp in places_view.all_place_card.cover_items[:16] %}
+                    <div class="places-all-grid-shell" style="--places-all-cols: {{ 4 if (places_view.all_place_card.cover_items|length) >= 4 else (places_view.all_place_card.cover_items|length if (places_view.all_place_card.cover_items|length) > 0 else 1) }}; {% set _cover_len = places_view.all_place_card.cover_items|length %}{% if _cover_len < 4 %}max-width: calc({{ _cover_len if _cover_len > 0 else 1 }} * 150px + {{ (_cover_len - 1) if _cover_len > 0 else 0 }} * 8px + 28px);{% endif %}">
+                        <div class="places-all-grid">
+                            {% for cp in places_view.all_place_card.cover_items[:16] %}
+                            <a class="places-all-grid-link" href="#" onclick="event.preventDefault(); openLB({{ cp.lightbox_index if cp.lightbox_index is defined else loop.index0 }}, '{{ places_view.all_place_card.manifest_key }}');">
                                 <img src="/thumbs/{{ cp.sha1 }}.jpg" loading="lazy">
-                                {% endfor %}
-                            </div>
+                            </a>
+                            {% endfor %}
                         </div>
-                    </a>
+                    </div>
                     {% endif %}
                 </div>
                 {% endif %}
@@ -3757,10 +3757,34 @@ def create_app(config: ArchiveConfig) -> Flask:
             item["_hero_score"] = store.get_hero_score(item)
         node = request.args.get("node")
         view = places.places_get_view(PlacesContext(scope_type=scope_type, title=context_title, breadcrumb=breadcrumb, scope_url=scope_url), items, selected_node_id=node)
+
+        manifests = {}
+        all_place_card = view.get("all_place_card") if isinstance(view, dict) else None
+        if all_place_card and all_place_card.get("cover_items"):
+            item_by_sha1 = {str(item.get("sha1")): item for item in items if item.get("sha1")}
+            cover_sha1s = [str(cp.get("sha1") or "") for cp in all_place_card.get("cover_items", []) if str(cp.get("sha1") or "")]
+            cover_manifest_items = [item_by_sha1[sha1] for sha1 in cover_sha1s if sha1 in item_by_sha1]
+            if cover_manifest_items:
+                selected_node = (view.get("selected_node") or {}) if isinstance(view, dict) else {}
+                node_id = str(selected_node.get("node_id") or "places")
+                manifest_key = f"places_all_{node_id}"
+                manifests[manifest_key] = store.build_manifest(cover_manifest_items)
+                all_place_card["manifest_key"] = manifest_key
+                for idx, cp in enumerate(all_place_card.get("cover_items", [])):
+                    cp["lightbox_index"] = idx
+
         action_links = [make_places_action(scope_url)]
         if extra_actions:
             action_links.extend(extra_actions)
-        return render_page(page_title=page_title, active_tab="places", banner_img="hero-places.png", breadcrumb=breadcrumb, action_links=action_links, places_view=view)
+        return render_page(
+            page_title=page_title,
+            active_tab="places",
+            banner_img="hero-places.png",
+            breadcrumb=breadcrumb,
+            action_links=action_links,
+            places_view=view,
+            manifests=manifests,
+        )
 
     def render_page(**kwargs: Any) -> str:
         kwargs.setdefault('manifests', {})
