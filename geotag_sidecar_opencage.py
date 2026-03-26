@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 
 EPSILON_GPS = 0.000001
-DEFAULT_ARCHIVE_ROOT = r"C:\website-photos"
+DEFAULT_ARCHIVE_ROOT = r"d:\LifeArchive"
 DEFAULT_LOOKUP_LIMIT = 2500 # conservative first-run safety limit
 DEFAULT_ROUND_DECIMALS = 3
-DEFAULT_REQUEST_DELAY_SECONDS = 1.1
+DEFAULT_REQUEST_DELAY_SECONDS = .08
 OPENCAGE_URL = "https://api.opencagedata.com/geocode/v1/json"
 OPENCAGE_API_KEY_LENGTH = 32
 
