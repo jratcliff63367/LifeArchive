@@ -9,10 +9,10 @@ from datetime import datetime
 # CONFIG
 # ------------------------------------------------------------
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-IMAGE_ROOT = r"C:\website-photos"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+IMAGE_ROOT = r"C:\LifeArchive"
 
-OUTPUT_DB = r"C:\website-photos\technical_scores.sqlite"
+OUTPUT_DB = r"C:\LifeArchive\technical_scores.sqlite"
 
 MODEL_VERSION = "tech_score_v1"
 

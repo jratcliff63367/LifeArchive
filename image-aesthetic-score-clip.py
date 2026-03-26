@@ -19,9 +19,9 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 # CONFIG
 # ------------------------------------------------------------
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-IMAGE_ROOT = r"C:\website-photos"
-OUTPUT_DB = r"C:\website-photos\aesthetic_scores.sqlite"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+IMAGE_ROOT = r"C:\LifeArchive"
+OUTPUT_DB = r"C:\LifeArchive\aesthetic_scores.sqlite"
 
 DEFAULT_INCREMENTAL = True
 PROGRESS_INTERVAL = 5

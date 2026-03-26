@@ -9,11 +9,11 @@ from datetime import datetime
 # CONFIG
 # ------------------------------------------------------------
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-IMAGE_ROOT = r"C:\website-photos"
-OUTPUT_DB = r"C:\website-photos\face_scores.sqlite"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+IMAGE_ROOT = r"C:\LifeArchive"
+OUTPUT_DB = r"C:\LifeArchive\face_scores.sqlite"
 
-MODEL_DIR = r"C:\website-photos\models"
+MODEL_DIR = r"C:\LifeArchive\models"
 MODEL_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
 
 # Official OpenCV YuNet model mirror

@@ -18,10 +18,10 @@ from PIL import Image, ImageFile
 # CONFIG
 # ============================================================================
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-OUTPUT_DB = r"C:\website-photos\semantic_scores.sqlite"
-FACE_DB = r"C:\website-photos\face_scores.sqlite"
-IMAGE_ROOT = r"C:\website-photos"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+OUTPUT_DB = r"C:\LifeArchive\semantic_scores.sqlite"
+FACE_DB = r"C:\LifeArchive\face_scores.sqlite"
+IMAGE_ROOT = r"C:\LifeArchive"
 
 # Set to an integer for smoke testing, or None to process everything.
 LIMIT_IMAGES = None
