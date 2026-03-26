@@ -43,16 +43,10 @@ from PIL import ExifTags, Image, ImageOps
 # ------------------------------------------------------------
 
 SOURCE_DIRECTORIES = [
-     r"C:\Photos from 2024",
-#    r"C:\TerrysBackup",
-#    r"F:\GoogleTakeout\jratcliffscarab\Takeout\Google Photos",
-#    r"F:\photographs",
-#    r"F:\OldMediaTransfer",
-
+     r"F:\GoogleTakeout\jratcliffscarab\Takeout\Google Photos"
 ]
 
-#DEST_ROOT = r"F:\GatherPhotos"
-DEST_ROOT = r"C:\website-photos"
+DEST_ROOT = r"D:\LifeArchive"
 
 # Mode:
 #   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally
@@ -642,7 +636,11 @@ def run_ingest():
                 full_path = os.path.join(root, name)
                 current_file = full_path
 
-                rel_check = os.path.relpath(full_path, DEST_ROOT)
+                # In ingest mode, the source file may be on a different drive than DEST_ROOT.
+                # We only want to inspect whether the path under the *scan root* contains private
+                # underscore-prefixed folders, not compute a cross-drive relative path to DEST_ROOT.
+                rel_base = scan_root if MODE == "ingest" else DEST_ROOT
+                rel_check = os.path.relpath(full_path, rel_base)
                 parts = Path(rel_check).parts
 
                 if any(p.startswith("_") for p in parts):
