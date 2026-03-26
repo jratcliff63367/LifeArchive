@@ -5140,7 +5140,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Life Archive baseline backend")
     parser.add_argument(
         "--archive-root",
-        default=os.environ.get("LIFE_ARCHIVE_ROOT", r"d:\LifeArchive"),
+        default=os.environ.get("LIFE_ARCHIVE_ROOT", r"c:\LifeArchive"),
         help="Archive root containing archive_index.db, _thumbs, and _web_layout/assets",
     )
     parser.add_argument(
