@@ -4040,7 +4040,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         }
         if len(places_bucket_store) > 2000:
             cutoff = time.time() - 86400
-            stale = [k for k, v in places_bucket_store.items() if float(v.get('created_at', 0)) < cutoff]
+            stale = [k for k, v in list(places_bucket_store.items()) if float(v.get('created_at', 0)) < cutoff]
             for k in stale[:1000]:
                 places_bucket_store.pop(k, None)
         return token

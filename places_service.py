@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import heapq
 import sqlite3
 from urllib.parse import quote, urlencode
 from collections import defaultdict
@@ -87,9 +88,24 @@ class PlacesService:
         if collapsed_node_id not in nodes:
             collapsed_node_id = None
         selected_node = nodes[resolved_selected]
-        gallery_items = self._build_gallery_items(selected_node.item_refs or [], gallery_limit=gallery_limit, selected_node=selected_node, context=context)
         leaf_cards = self._build_leaf_cards(nodes, selected_node)
-        all_place_card = self._build_all_place_card(selected_node, context=context)
+
+        # Root-level "World" views can contain the entire archive. Building
+        # time-cluster galleries and all-photo mosaics for tens of thousands of
+        # photos at request time is catastrophically expensive, so skip those
+        # heavyweight sections for the root node.
+        if selected_node.level == "root":
+            gallery_items = []
+            all_place_card = None
+        else:
+            gallery_items = self._build_gallery_items(
+                selected_node.item_refs or [],
+                gallery_limit=gallery_limit,
+                selected_node=selected_node,
+                context=context,
+            )
+            all_place_card = self._build_all_place_card(selected_node, context=context)
+
         return {
             "context": context,
             "selected_node_id": resolved_selected,
@@ -123,12 +139,28 @@ class PlacesService:
 
     def _build_gallery_items(self, items: list[dict[str, Any]], gallery_limit: int = 18, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> list[dict[str, Any]]:
         deduped = self._dedupe_items(items)
-        if not deduped:
+        if not deduped or gallery_limit <= 0:
             return []
+
         clusters = self._cluster_items_by_time(deduped, threshold_seconds=20)
-        gallery: list[dict[str, Any]] = []
+        if not clusters:
+            return []
+
+        # The expensive part of gallery construction is not clustering itself;
+        # it is registering bucket/lightbox payloads for every candidate. So:
+        # 1) cheaply choose the best representative for each cluster
+        # 2) keep only the top N clusters by hero score
+        # 3) only then build expensive href payloads for the survivors
+        cluster_candidates: list[tuple[tuple[float, str], dict[str, Any], list[dict[str, Any]]]] = []
         for cluster in clusters:
             representative = self.choose_best_item(cluster) or sorted(cluster, key=self._hero_sort_key, reverse=True)[0]
+            cluster_candidates.append((self._hero_sort_key(representative), representative, cluster))
+
+        top_candidates = heapq.nlargest(gallery_limit, cluster_candidates, key=lambda entry: entry[0])
+        top_candidates.sort(key=lambda entry: entry[0], reverse=True)
+
+        gallery: list[dict[str, Any]] = []
+        for _sort_key, representative, cluster in top_candidates:
             dt = self._parse_dt(representative.get('final_dt'))
             rep = dict(representative)
             title = (f"{dt.strftime('%B')} {dt.day}, {dt.year}" if dt else str(representative.get('_month_name') or 'Photo'))
@@ -141,7 +173,7 @@ class PlacesService:
             rep['_places_group_href'] = self._build_bucket_page_href(cluster, title, selected_node=selected_node, context=context)
             rep['_places_href'] = self._build_bucket_lightbox_href(cluster, representative, title, selected_node=selected_node, context=context)
             gallery.append(rep)
-        gallery.sort(key=self._hero_sort_key, reverse=True)
+
         return gallery[:gallery_limit]
 
     def _build_bucket_page_href(self, cluster: list[dict[str, Any]], label: str, selected_node: PlaceNode | None = None, context: PlacesContext | None = None) -> str:

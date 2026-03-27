@@ -10,12 +10,12 @@ import mediapipe as mp
 # CONFIG
 # ------------------------------------------------------------
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-FACE_DB = r"C:\website-photos\face_scores.sqlite"
-IMAGE_ROOT = r"C:\website-photos"
-OUTPUT_DB = r"C:\website-photos\face_expression.sqlite"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+FACE_DB = r"C:\LifeArchive\face_scores.sqlite"
+IMAGE_ROOT = r"C:\LifeArchive"
+OUTPUT_DB = r"C:\LifeArchive\face_expression.sqlite"
 
-MODEL_PATH = r"C:\website-photos\models\face_landmarker.task"
+MODEL_PATH = r"C:\LifeArchive\models\face_landmarker.task"
 MODEL_VERSION = "mediapipe_face_landmarker_v1"
 
 PROGRESS_INTERVAL = 5
@@ -28,7 +28,7 @@ MAX_FACE_CROP_LONG_EDGE = 1024
 
 # Debug failed crops by writing the cropped face image to disk.
 DEBUG_WRITE_FAILED_CROPS = False
-DEBUG_FAILED_CROP_DIR = r"C:\website-photos\face_expression_debug"
+DEBUG_FAILED_CROP_DIR = r"C:\LifeArchive\face_expression_debug"
 DEBUG_MAX_FAILED_CROPS = 200
 
 # If True, skip images already present in the summary table.

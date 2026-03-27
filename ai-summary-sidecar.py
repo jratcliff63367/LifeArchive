@@ -16,9 +16,9 @@ from PIL import Image, ImageFile
 # CONFIG
 # ============================================================================
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
-OUTPUT_DB = r"C:\website-photos\ai_summaries.sqlite"
-IMAGE_ROOT = r"C:\website-photos"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
+OUTPUT_DB = r"C:\LifeArchive\ai_summaries.sqlite"
+IMAGE_ROOT = r"C:\LifeArchive"
 
 # Set to a small integer while evaluating output quality.
 # Set to None for a full run.

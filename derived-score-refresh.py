@@ -13,16 +13,16 @@ from typing import Any
 # CONFIG
 # ============================================================================
 
-ARCHIVE_DB = r"C:\website-photos\archive_index.db"
+ARCHIVE_DB = r"C:\LifeArchive\archive_index.db"
 
-TECHNICAL_DB = r"C:\website-photos\technical_scores.sqlite"
-FACE_DB = r"C:\website-photos\face_scores.sqlite"
-AESTHETIC_DB = r"C:\website-photos\aesthetic_scores.sqlite"
-SEMANTIC_DB = r"C:\website-photos\semantic_scores.sqlite"
-AI_SUMMARY_DB = r"C:\website-photos\ai_summaries.sqlite"
+TECHNICAL_DB = r"C:\LifeArchive\technical_scores.sqlite"
+FACE_DB = r"C:\LifeArchive\face_scores.sqlite"
+AESTHETIC_DB = r"C:\LifeArchive\aesthetic_scores.sqlite"
+SEMANTIC_DB = r"C:\LifeArchive\semantic_scores.sqlite"
+AI_SUMMARY_DB = r"C:\LifeArchive\ai_summaries.sqlite"
 
-HERO_OUTPUT_DB = r"C:\website-photos\hero_scores.sqlite"
-CULL_OUTPUT_DB = r"C:\website-photos\cull_scores.sqlite"
+HERO_OUTPUT_DB = r"C:\LifeArchive\hero_scores.sqlite"
+CULL_OUTPUT_DB = r"C:\LifeArchive\cull_scores.sqlite"
 
 # Set either or both to True.
 RUN_HERO = True
