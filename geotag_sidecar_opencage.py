@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 EPSILON_GPS = 0.000001
-DEFAULT_ARCHIVE_ROOT = r"c:\LifeArchive"
+DEFAULT_ARCHIVE_ROOT = r"d:\LifeArchive"
 DEFAULT_LOOKUP_LIMIT = 10000 # conservative first-run safety limit
 DEFAULT_ROUND_DECIMALS = 3
 DEFAULT_REQUEST_DELAY_SECONDS = .08

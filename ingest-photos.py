@@ -43,7 +43,7 @@ from PIL import ExifTags, Image, ImageOps
 # ------------------------------------------------------------
 
 SOURCE_DIRECTORIES = [
-     r"F:\GoogleTakeout\jratcliffscarab\Takeout\Google Photos"
+     r"F:\GooglePhotos-2026"
 ]
 
 DEST_ROOT = r"D:\LifeArchive"
