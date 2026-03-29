@@ -46,12 +46,12 @@ SOURCE_DIRECTORIES = [
      r"F:\GooglePhotos-2026"
 ]
 
-DEST_ROOT = r"D:\LifeArchive"
+DEST_ROOT = r"c:\LifeArchive"
 
 # Mode:
 #   "ingest"  = scan SOURCE_DIRECTORIES, copy into DEST_ROOT, update DB incrementally
 #   "rebuild" = scan files already under DEST_ROOT, do not copy, rebuild/update metadata in place
-MODE = "ingest"   # "ingest" or "rebuild"
+MODE = "rebuild"   # "ingest" or "rebuild"
 
 # Rebuild options (used only when MODE == "rebuild")
 # If True, delete and fully rebuild the SQLite database from files already inside DEST_ROOT.

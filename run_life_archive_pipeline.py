@@ -48,11 +48,12 @@ WORKDIR = Path(r"C:\Users\jratc\python-code")
 #
 # If your actual filenames differ, just change the strings on the right side.
 SCRIPT_COMMANDS = [
-    ("Face detection",        "face-detect-score.py"),
-    ("Face expression",       "face-expression-sidecar.py"),
-    ("Aesthetic scoring",     "image-aesthetic-score-clip.py"),
-    ("Technical scoring",     "technical-image-score.py"),
-    ("Semantic scoring",      "semantic-score.py"),
+#    ("Rebuild Ingestion",     "ingest-photos.py"),
+#    ("Face detection",        "face-detect-score.py"),
+#    ("Face expression",       "face-expression-sidecar.py"),
+#    ("Aesthetic scoring",     "image-aesthetic-score-clip.py"),
+#    ("Technical scoring",     "technical-image-score.py"),
+#    ("Semantic scoring",      "semantic-score.py"),
     ("AI summary",            "ai-summary-sidecar.py"),
     ("Geolocation",           "geotag_sidecar_opencage.py"),
     ("Derived score refresh", "derived-score-refresh.py"),

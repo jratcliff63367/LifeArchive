@@ -93,6 +93,8 @@ STASH_CATEGORIES = [
     {"key": "screenshots", "label": "Screenshots", "dir": "_stash/screenshots"},
     {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
     {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
+    {"key": "personal-artwork", "label": "Personal Artwork", "dir": "_stash/personal-artwork"},
+    {"key": "Movies16mm", "label": "Moviews16mm", "dir": "_stash/movies-16mm"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -5140,7 +5142,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Life Archive baseline backend")
     parser.add_argument(
         "--archive-root",
-        default=os.environ.get("LIFE_ARCHIVE_ROOT", r"d:\LifeArchive"),
+        default=os.environ.get("LIFE_ARCHIVE_ROOT", r"c:\LifeArchive"),
         help="Archive root containing archive_index.db, _thumbs, and _web_layout/assets",
     )
     parser.add_argument(
