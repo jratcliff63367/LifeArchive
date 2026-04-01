@@ -186,6 +186,10 @@ HTML_TEMPLATE = r"""
             border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(187, 134, 252, 0.35);
         }
+        .photo-card.keyboard-focus {
+            border-color: #ffffff;
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 0 5px rgba(187, 134, 252, 0.28);
+        }
         .photo-select-wrap {
             position: absolute;
             top: 10px;
@@ -1601,6 +1605,125 @@ HTML_TEMPLATE = r"""
         let showFaceOverlay = false;
         let activeJobId = null;
         let activeJobPollTimer = null;
+        let focusedPhotoSha1 = null;
+
+        function getVisiblePhotoCards() {
+            return Array.from(document.querySelectorAll('.photo-card[data-sha]'));
+        }
+
+        function getPhotoCardBySha1(sha1) {
+            if (!sha1) return null;
+            return document.querySelector(`.photo-card[data-sha="${sha1}"]`);
+        }
+
+        function refreshKeyboardFocusUI() {
+            const cards = getVisiblePhotoCards();
+            let hasFocusedCard = false;
+            cards.forEach(card => {
+                const isFocused = focusedPhotoSha1 && card.dataset.sha === focusedPhotoSha1;
+                card.classList.toggle('keyboard-focus', !!isFocused);
+                if (isFocused) hasFocusedCard = true;
+            });
+            if (!hasFocusedCard) {
+                focusedPhotoSha1 = null;
+            }
+        }
+
+        function setFocusedPhoto(sha1, shouldScroll = true) {
+            const card = getPhotoCardBySha1(sha1);
+            if (!card) return;
+            focusedPhotoSha1 = sha1;
+            refreshKeyboardFocusUI();
+            if (shouldScroll) {
+                card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+        }
+
+        function ensureFocusedPhoto() {
+            const cards = getVisiblePhotoCards();
+            if (cards.length === 0) return null;
+            const existing = focusedPhotoSha1 ? getPhotoCardBySha1(focusedPhotoSha1) : null;
+            if (existing) return existing;
+            focusedPhotoSha1 = cards[0].dataset.sha;
+            refreshKeyboardFocusUI();
+            return cards[0];
+        }
+
+        function groupPhotoCardsIntoRows() {
+            const cards = getVisiblePhotoCards();
+            const rows = [];
+            const tolerance = 24;
+            cards.forEach(card => {
+                const rect = card.getBoundingClientRect();
+                const top = rect.top;
+                let row = rows.find(r => Math.abs(r.top - top) <= tolerance);
+                if (!row) {
+                    row = { top, cards: [] };
+                    rows.push(row);
+                }
+                row.cards.push({
+                    card,
+                    left: rect.left,
+                    centerX: rect.left + (rect.width / 2),
+                });
+            });
+            rows.sort((a, b) => a.top - b.top);
+            rows.forEach(row => row.cards.sort((a, b) => a.left - b.left));
+            return rows;
+        }
+
+        function moveKeyboardFocus(direction) {
+            const current = ensureFocusedPhoto();
+            if (!current) return;
+            const rows = groupPhotoCardsIntoRows();
+            if (!rows.length) return;
+
+            let rowIndex = -1;
+            let colIndex = -1;
+            for (let i = 0; i < rows.length; i++) {
+                const j = rows[i].cards.findIndex(entry => entry.card.dataset.sha === current.dataset.sha);
+                if (j >= 0) {
+                    rowIndex = i;
+                    colIndex = j;
+                    break;
+                }
+            }
+            if (rowIndex < 0 || colIndex < 0) return;
+
+            let target = null;
+            if (direction === 'left') {
+                target = rows[rowIndex].cards[Math.max(0, colIndex - 1)]?.card || null;
+            } else if (direction === 'right') {
+                target = rows[rowIndex].cards[Math.min(rows[rowIndex].cards.length - 1, colIndex + 1)]?.card || null;
+            } else {
+                const currentCenter = rows[rowIndex].cards[colIndex].centerX;
+                const targetRowIndex = direction === 'up' ? rowIndex - 1 : rowIndex + 1;
+                if (targetRowIndex >= 0 && targetRowIndex < rows.length) {
+                    const targetRow = rows[targetRowIndex].cards;
+                    let bestIdx = 0;
+                    let bestDist = Infinity;
+                    for (let i = 0; i < targetRow.length; i++) {
+                        const dist = Math.abs(targetRow[i].centerX - currentCenter);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIdx = i;
+                        }
+                    }
+                    target = targetRow[bestIdx]?.card || null;
+                }
+            }
+
+            if (target) {
+                setFocusedPhoto(target.dataset.sha, true);
+            }
+        }
+
+        function toggleFocusedPhotoSelection() {
+            const current = ensureFocusedPhoto();
+            if (!current) return;
+            toggleSelection(current.dataset.sha);
+            setFocusedPhoto(current.dataset.sha, false);
+        }
 
         function hideContextMenu() {
             const menu = document.getElementById('context-menu');
@@ -2160,6 +2283,7 @@ HTML_TEMPLATE = r"""
                     bar.style.display = 'none';
                 }
             }
+            refreshKeyboardFocusUI();
         }
 
         function clearSelection() {
@@ -2523,6 +2647,32 @@ HTML_TEMPLATE = r"""
             if (document.getElementById('lightbox').classList.contains('active')) {
                 if (e.key === 'ArrowRight') changeImg(1);
                 if (e.key === 'ArrowLeft') changeImg(-1);
+            } else if (!isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    moveKeyboardFocus('right');
+                    return;
+                }
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    moveKeyboardFocus('left');
+                    return;
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    moveKeyboardFocus('up');
+                    return;
+                }
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    moveKeyboardFocus('down');
+                    return;
+                }
+                if (e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    toggleFocusedPhotoSelection();
+                    return;
+                }
             }
             if (e.key.toLowerCase() === 'e') toggleSidebar();
         };
@@ -2531,14 +2681,24 @@ HTML_TEMPLATE = r"""
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    setFocusedPhoto(cb.dataset.sha, false);
                     toggleSelection(cb.dataset.sha);
                 });
+            });
+
+            document.querySelectorAll('.photo-card[data-sha]').forEach(card => {
+                card.addEventListener('click', () => setFocusedPhoto(card.dataset.sha, false));
+                card.addEventListener('mousedown', () => setFocusedPhoto(card.dataset.sha, false));
             });
 
             document.querySelectorAll('.nav-bar a, .tag-pill, .breadcrumb a, .grid a').forEach(link => {
                 link.addEventListener('click', () => clearSelection());
             });
 
+            const firstCard = getVisiblePhotoCards()[0];
+            if (firstCard) {
+                focusedPhotoSha1 = firstCard.dataset.sha;
+            }
             refreshSelectionUI();
         });
     </script>
