@@ -54,9 +54,9 @@ SCRIPT_COMMANDS = [
 #    ("Aesthetic scoring",     "image-aesthetic-score-clip.py"),
 #    ("Technical scoring",     "technical-image-score.py"),
 #    ("Semantic scoring",      "semantic-score.py"),
-    ("AI summary",            "ai-summary-sidecar.py"),
+    #("AI summary",            "ai-summary-sidecar.py"),
     ("Geolocation",           "geotag_sidecar_opencage.py"),
-    ("Derived score refresh", "derived-score-refresh.py"),
+    ("Derived score refresh", "derived-score-refresh.py"), 
 ]
 
 # If True, stop immediately on the first failure.

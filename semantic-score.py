@@ -30,7 +30,7 @@ LIMIT_IMAGES = None
 REBUILD_DATABASE = False
 
 # If True, rows containing warnings from prior runs are eligible for retry.
-RETRY_WARNING_ROWS = True-
+RETRY_WARNING_ROWS = True
 
 # Image normalization.
 MAX_ANALYSIS_DIM = 1024
