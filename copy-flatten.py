@@ -6,7 +6,7 @@ from pathlib import Path
 # =========================
 # CONFIG
 # =========================
-SOURCE_DIR = r"C:\GameArt"
+SOURCE_DIR = r"C:\LifeArchive\_stash\game-art"
 DEST_DIR   = r"C:\GameArt-Flat"
 
 # =========================
