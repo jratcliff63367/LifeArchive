@@ -95,6 +95,9 @@ STASH_CATEGORIES = [
     {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
     {"key": "personal-artwork", "label": "Personal Artwork", "dir": "_stash/personal-artwork"},
     {"key": "Movies16mm", "label": "Moviews16mm", "dir": "_stash/movies-16mm"},
+    {"key": "CarShow", "label": "CarShow", "dir": "_stash/carshow"},
+    {"key": "449-Oxford-Lane", "label": "449-Oxford-Lane", "dir": "_stash/449-Oxford-Lane"},
+    {"key": "445-Oxford-Lane", "label": "445-Oxford-Lane", "dir": "_stash/445-Oxford-Lane"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
