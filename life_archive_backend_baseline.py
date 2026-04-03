@@ -2886,6 +2886,10 @@ class ArchiveStore:
         self.global_tags: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.hero_score_map: dict[str, float] = {}
         self.hero_db_mtime: float = 0.0
+        self.cache_loaded: bool = False
+        self.cache_dirty: bool = True
+        self.media_db_mtime: float = 0.0
+        self.hero_db_source_mtime: float = 0.0
         self.config.composite_dir.mkdir(parents=True, exist_ok=True)
 
     def is_excluded_tag(self, tag: str) -> bool:
@@ -2908,6 +2912,17 @@ class ArchiveStore:
             if "selection_version" not in cols:
                 conn.execute("ALTER TABLE composite_cache ADD COLUMN selection_version TEXT DEFAULT ''")
             conn.commit()
+
+
+    @staticmethod
+    def _safe_mtime(path: Path) -> float:
+        try:
+            return float(path.stat().st_mtime)
+        except Exception:
+            return 0.0
+
+    def mark_cache_dirty(self) -> None:
+        self.cache_dirty = True
 
 
     def load_hero_score_map(self) -> None:
@@ -2938,13 +2953,37 @@ class ArchiveStore:
         best = max(items, key=sort_key)
         return best
 
-    def load_cache(self) -> None:
+    def load_cache(self, force: bool = False) -> None:
         total_started = time.perf_counter()
+        current_db_mtime = self._safe_mtime(self.config.db_path)
+        current_hero_db_mtime = self._safe_mtime(self.config.hero_db_path)
+
+        if (
+            not force
+            and self.cache_loaded
+            and not self.cache_dirty
+            and current_db_mtime == self.media_db_mtime
+            and current_hero_db_mtime == self.hero_db_source_mtime
+        ):
+            logging.warning(
+                "[CACHE LOAD] total=0.000s | cache_hit=1 | rows=%d | dated=%d | undated=%d | tags=%d",
+                len(self.db_cache) + len(self.undated_cache),
+                len(self.db_cache),
+                len(self.undated_cache),
+                len(self.global_tags),
+            )
+            return
 
         if not self.config.db_path.exists():
             self.db_cache = []
             self.undated_cache = []
             self.global_tags = defaultdict(list)
+            self.hero_score_map = {}
+            self.hero_db_mtime = 0.0
+            self.media_db_mtime = current_db_mtime
+            self.hero_db_source_mtime = current_hero_db_mtime
+            self.cache_loaded = True
+            self.cache_dirty = False
             logging.warning("[CACHE LOAD] total=0.000s | db_missing=1")
             return
 
@@ -3003,8 +3042,13 @@ class ArchiveStore:
         build_elapsed = time.perf_counter() - build_started
         total_elapsed = time.perf_counter() - total_started
 
+        self.media_db_mtime = current_db_mtime
+        self.hero_db_source_mtime = current_hero_db_mtime
+        self.cache_loaded = True
+        self.cache_dirty = False
+
         logging.warning(
-            "[CACHE LOAD] total=%.3fs | init_db=%.3fs | hero_scores=%.3fs | db_query=%.3fs | build_indexes=%.3fs | rows=%d | dated=%d | undated=%d | tags=%d",
+            "[CACHE LOAD] total=%.3fs | cache_hit=0 | init_db=%.3fs | hero_scores=%.3fs | db_query=%.3fs | build_indexes=%.3fs | rows=%d | dated=%d | undated=%d | tags=%d",
             total_elapsed,
             ext_elapsed,
             hero_elapsed,
@@ -4606,6 +4650,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             conn.commit()
 
         invalidate_composites()
+        store.mark_cache_dirty()
         return True, None, {
             'requested': total,
             'moved': moved_count,
@@ -4761,6 +4806,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                     pass
 
         invalidate_composites()
+        store.mark_cache_dirty()
         return True, None
 
     def rotate_media_by_sha(sha1: str, degrees: int) -> tuple[bool, str | None]:
