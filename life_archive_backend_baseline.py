@@ -101,6 +101,7 @@ STASH_CATEGORIES = [
     {"key": "445-Oxford-Lane", "label": "445-Oxford-Lane", "dir": "_stash/445-Oxford-Lane"},
     {"key": "Terrys", "label": "Terrys", "dir": "_stash/terrys"},
     {"key": "models", "label": "Models", "dir": "_stash/models"},
+    {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -472,9 +473,11 @@ HTML_TEMPLATE = r"""
             border: 1px solid #444;
             z-index: 100000;
             min-width: 250px;
+            max-height: calc(100vh - 16px);
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             padding: 6px 0;
+            overflow: visible;
         }
         .menu-item {
             position: relative;
@@ -502,6 +505,9 @@ HTML_TEMPLATE = r"""
             top: 0;
             left: 100%;
             min-width: 220px;
+            max-height: calc(100vh - 16px);
+            overflow-y: auto;
+            overflow-x: hidden;
             background: #222;
             border: 1px solid #444;
             border-radius: 8px;
@@ -1741,6 +1747,64 @@ HTML_TEMPLATE = r"""
             if (menu) menu.classList.remove('open');
         }
 
+        function clampContextMenuToViewport(menu, clientX, clientY) {
+            if (!menu) return;
+            const margin = 8;
+            menu.style.left = `${clientX}px`;
+            menu.style.top = `${clientY}px`;
+
+            const rect = menu.getBoundingClientRect();
+            let left = clientX;
+            let top = clientY;
+
+            if (rect.right > window.innerWidth - margin) {
+                left = Math.max(margin, window.innerWidth - rect.width - margin);
+            }
+            if (rect.bottom > window.innerHeight - margin) {
+                top = Math.max(margin, window.innerHeight - rect.height - margin);
+            }
+
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+        }
+
+        function adjustContextSubmenus() {
+            const menu = document.getElementById('context-menu');
+            if (!menu) return;
+            const margin = 8;
+            menu.querySelectorAll('.submenu').forEach(submenu => {
+                submenu.style.top = '0px';
+                submenu.style.left = '100%';
+                submenu.style.right = 'auto';
+
+                const parent = submenu.parentElement;
+                if (!parent) return;
+                const parentRect = parent.getBoundingClientRect();
+
+                submenu.style.display = 'block';
+                submenu.style.visibility = 'hidden';
+
+                const rect = submenu.getBoundingClientRect();
+
+                let top = 0;
+                if (rect.bottom > window.innerHeight - margin) {
+                    top = Math.min(0, (window.innerHeight - margin) - rect.bottom);
+                }
+                if (parentRect.top + top < margin) {
+                    top = margin - parentRect.top;
+                }
+
+                if (rect.right > window.innerWidth - margin) {
+                    submenu.style.left = 'auto';
+                    submenu.style.right = '100%';
+                }
+
+                submenu.style.top = `${top}px`;
+                submenu.style.visibility = '';
+                submenu.style.display = '';
+            });
+        }
+
         function getStashCategoryDir(categoryKey) {
             const item = stashCategories.find(entry => entry.key === categoryKey);
             return item ? item.dir : '_stash';
@@ -2468,8 +2532,8 @@ HTML_TEMPLATE = r"""
             configureContextMenuFor(kind);
             const menu = document.getElementById('context-menu');
             menu.style.display = 'block';
-            menu.style.left = e.clientX + 'px';
-            menu.style.top = e.clientY + 'px';
+            clampContextMenuToViewport(menu, e.clientX, e.clientY);
+            adjustContextSubmenus();
         }
 
         function handleCtx(e, sha1) {
@@ -2490,6 +2554,7 @@ HTML_TEMPLATE = r"""
         }
 
         function rotateImage(degrees) {
+            hideContextMenu();
             const targets = getContextTargets(menuSha1);
             if (targets.length > 1) {
                 fetch('/api/rotate_batch', {
@@ -2635,24 +2700,38 @@ HTML_TEMPLATE = r"""
             }
         };
 
-        document.onkeydown = (e) => {
-            const targetTag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
-            const isTextInput = targetTag === 'input' || targetTag === 'textarea';
+        document.addEventListener('keydown', (e) => {
+            const activeEl = document.activeElement;
+            const targetTag = (activeEl && activeEl.tagName ? activeEl.tagName.toLowerCase() : '');
+            const activeIsCheckbox = !!(activeEl && activeEl.classList && activeEl.classList.contains('photo-select-checkbox'));
+            const isTextInput = targetTag === 'textarea' || (targetTag === 'input' && !activeIsCheckbox);
+
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 e.preventDefault();
                 selectAllVisible();
                 return;
             }
+
             if (e.key === 'Escape') {
                 if (selectedSha1s.size > 0) {
                     clearSelection();
                     return;
                 }
                 closeLB();
+                return;
             }
+
             if (document.getElementById('lightbox').classList.contains('active')) {
-                if (e.key === 'ArrowRight') changeImg(1);
-                if (e.key === 'ArrowLeft') changeImg(-1);
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    changeImg(1);
+                    return;
+                }
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    changeImg(-1);
+                    return;
+                }
             } else if (!isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 if (e.key === 'ArrowRight') {
                     e.preventDefault();
@@ -2680,8 +2759,9 @@ HTML_TEMPLATE = r"""
                     return;
                 }
             }
+
             if (e.key.toLowerCase() === 'e') toggleSidebar();
-        };
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
