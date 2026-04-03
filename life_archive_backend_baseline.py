@@ -2939,21 +2939,32 @@ class ArchiveStore:
         return best
 
     def load_cache(self) -> None:
+        total_started = time.perf_counter()
+
         if not self.config.db_path.exists():
             self.db_cache = []
             self.undated_cache = []
             self.global_tags = defaultdict(list)
+            logging.warning("[CACHE LOAD] total=0.000s | db_missing=1")
             return
 
+        ext_started = time.perf_counter()
         self.init_db_extensions()
-        self.load_hero_score_map()
+        ext_elapsed = time.perf_counter() - ext_started
 
+        hero_started = time.perf_counter()
+        self.load_hero_score_map()
+        hero_elapsed = time.perf_counter() - hero_started
+
+        db_started = time.perf_counter()
         with sqlite3.connect(self.config.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC"
             ).fetchall()
+        db_elapsed = time.perf_counter() - db_started
 
+        build_started = time.perf_counter()
         self.db_cache = []
         self.undated_cache = []
         self.global_tags = defaultdict(list)
@@ -2988,6 +2999,22 @@ class ArchiveStore:
 
             for tag in item["_tags_list"]:
                 self.global_tags[tag].append(item)
+
+        build_elapsed = time.perf_counter() - build_started
+        total_elapsed = time.perf_counter() - total_started
+
+        logging.warning(
+            "[CACHE LOAD] total=%.3fs | init_db=%.3fs | hero_scores=%.3fs | db_query=%.3fs | build_indexes=%.3fs | rows=%d | dated=%d | undated=%d | tags=%d",
+            total_elapsed,
+            ext_elapsed,
+            hero_elapsed,
+            db_elapsed,
+            build_elapsed,
+            len(rows),
+            len(self.db_cache),
+            len(self.undated_cache),
+            len(self.global_tags),
+        )
 
     @staticmethod
     def get_top_tags(items: Iterable[dict[str, Any]], limit: int = 3) -> list[str]:
