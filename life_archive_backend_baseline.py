@@ -102,6 +102,7 @@ STASH_CATEGORIES = [
     {"key": "Terrys", "label": "Terrys", "dir": "_stash/terrys"},
     {"key": "models", "label": "Models", "dir": "_stash/models"},
     {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
+    {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -2699,6 +2700,12 @@ HTML_TEMPLATE = r"""
                 hideSelectionStashMenu();
             }
         };
+
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted) {
+                window.location.reload();
+            }
+        });
 
         document.addEventListener('keydown', (e) => {
             const activeEl = document.activeElement;
