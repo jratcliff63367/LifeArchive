@@ -1824,11 +1824,19 @@ HTML_TEMPLATE = r"""
         function configureContextMenuFor(kind) {
             const menu = document.getElementById('context-menu');
             if (!menu) return;
+
             const photoOnly = ['rotate-cw', 'rotate-ccw', 'debug'];
             photoOnly.forEach(role => {
                 const el = menu.querySelector(`[data-role="${role}"]`);
                 if (!el) return;
-                el.classList.toggle('hidden', kind !== 'photo');
+                el.classList.toggle('hidden', kind !== 'photo-grid' && kind !== 'lightbox');
+            });
+
+            const cullOnly = ['cull-select', 'cull-move'];
+            cullOnly.forEach(role => {
+                const el = menu.querySelector(`[data-role="${role}"]`);
+                if (!el) return;
+                el.classList.toggle('hidden', kind !== 'photo-grid');
             });
         }
 
@@ -2543,7 +2551,7 @@ HTML_TEMPLATE = r"""
         function handleCtx(e, sha1) {
             menuSha1 = sha1;
             menuContext = { kind: 'photo', cardId: null };
-            openContextMenuAt(e, 'photo');
+            openContextMenuAt(e, 'photo-grid');
         }
 
         function handleHeroCtx(e, cardId) {
@@ -2554,7 +2562,9 @@ HTML_TEMPLATE = r"""
 
         function handleCtxFromLightbox(e) {
             if (!curM) return;
-            handleCtx(e, manifests[curM][curI].sha1);
+            menuSha1 = manifests[curM][curI].sha1;
+            menuContext = { kind: 'photo', cardId: null };
+            openContextMenuAt(e, 'lightbox');
         }
 
         function rotateImage(degrees) {
