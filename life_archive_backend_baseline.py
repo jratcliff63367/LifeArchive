@@ -77,6 +77,7 @@ werkzeug_log.setLevel(logging.ERROR)
 # Defaults / constants
 # ---------------------------------------------------------------------------
 DEFAULT_THEME_COLOR = "#bb86fc"
+SLOW_ROUTE_LOG_THRESHOLD_SECONDS = 0.75
 TAG_EXCLUSIONS = {
     "pictures",
     "photos",
@@ -958,7 +959,8 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
-        <div class="menu-item" data-role="cull" onclick="startCullFromContext()">Cull</div>
+        <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
+        <div class="menu-item" data-role="cull-move" onclick="startCullMoveFromContext()">Cull Move</div>
         <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
         <div class="menu-item has-submenu" data-role="stash">Stash <span class="menu-arrow">▸</span>
             <div class="submenu">
@@ -1449,10 +1451,10 @@ HTML_TEMPLATE = r"""
         {% if cards %}
         <div class="grid" style="margin-bottom: 50px;">
             {% for c in cards %}
-            <div class="card" data-card-id="{{ c.id }}" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
+            <div class="card" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
                 <div class="hero-preview">
                     {% if c.comp_hash %}
-                    <img class="composite-img" src="/composite/{{ c.comp_hash }}.jpg" loading="lazy" onerror="retryCompositeImage(this)">
+                    <img src="/composite/{{ c.comp_hash }}.jpg" loading="lazy">
                     {% endif %}
                 </div>
                 <div style="padding:20px 20px 5px;">
@@ -1504,7 +1506,8 @@ HTML_TEMPLATE = r"""
     <div id="selection-bar" class="selection-bar">
         <span id="selection-count">0 selected</span>
         <button type="button" onclick="selectAllVisible()">Select All</button>
-        <button type="button" onclick="startCullSelection()">Cull</button>
+        <button type="button" onclick="startCullSelectSelection()">Cull Select</button>
+        <button type="button" onclick="startCullMoveSelection()">Cull Move</button>
         <button type="button" onclick="rotateSelection(90)">Rotate 90° Clockwise ↻</button>
         <button type="button" onclick="rotateSelection(270)">Rotate 90° Counter ↺</button>
         <button type="button" onclick="moveCurrentSelectionTo('trash')">Move to Trash</button>
@@ -1618,7 +1621,6 @@ HTML_TEMPLATE = r"""
         let showFaceOverlay = false;
         let activeJobId = null;
         let activeJobPollTimer = null;
-        let pendingPostSuccessAction = null;
         let focusedPhotoSha1 = null;
 
         function getVisiblePhotoCards() {
@@ -1749,27 +1751,6 @@ HTML_TEMPLATE = r"""
             if (menu) menu.classList.remove('open');
         }
 
-        function retryCompositeImage(img) {
-            if (!img) return;
-            const baseSrc = img.dataset.baseSrc || img.getAttribute('src') || '';
-            if (!baseSrc) return;
-
-            if (!img.dataset.baseSrc) {
-                img.dataset.baseSrc = baseSrc.split('?')[0];
-            }
-            const cleanBase = img.dataset.baseSrc;
-            const attempts = Number(img.dataset.retryAttempts || '0');
-            if (attempts >= 8) return;
-
-            img.dataset.retryAttempts = String(attempts + 1);
-            img.style.opacity = '0.35';
-
-            const delay = Math.min(250 + (attempts * 250), 2000);
-            window.setTimeout(() => {
-                img.src = cleanBase + '?retry=' + Date.now() + '&n=' + (attempts + 1);
-            }, delay);
-        }
-
         function clampContextMenuToViewport(menu, clientX, clientY) {
             if (!menu) return;
             const margin = 8;
@@ -1840,22 +1821,6 @@ HTML_TEMPLATE = r"""
             return null;
         }
 
-        function buildFastTagsPostAction() {
-            if (window.location.pathname === '/tags' && menuContext.kind === 'hero' && menuContext.cardId) {
-                return { type: 'remove-tag-card', cardId: String(menuContext.cardId) };
-            }
-            return null;
-        }
-
-        function applyFastPostSuccessAction(action) {
-            if (!action || action.type !== 'remove-tag-card' || !action.cardId) return false;
-            const selector = '.card[data-card-id="' + String(action.cardId).replace(/"/g, '\"') + '"]';
-            const card = document.querySelector(selector);
-            if (!card) return false;
-            card.remove();
-            return true;
-        }
-
         function configureContextMenuFor(kind) {
             const menu = document.getElementById('context-menu');
             if (!menu) return;
@@ -1880,7 +1845,6 @@ HTML_TEMPLATE = r"""
                 activeJobPollTimer = null;
             }
             activeJobId = null;
-            pendingPostSuccessAction = null;
         }
 
         function updateProgressDialog(data) {
@@ -1916,19 +1880,12 @@ HTML_TEMPLATE = r"""
                 if (data.status === 'completed') {
                     activeJobId = null;
                     activeJobPollTimer = null;
-                    const action = pendingPostSuccessAction;
-                    pendingPostSuccessAction = null;
-                    if (applyFastPostSuccessAction(action)) {
-                        setTimeout(() => closeProgressDialog(), 250);
-                    } else {
-                        setTimeout(() => location.reload(), 700);
-                    }
+                    setTimeout(() => location.reload(), 700);
                     return;
                 }
                 if (data.status === 'error') {
                     activeJobId = null;
                     activeJobPollTimer = null;
-                    pendingPostSuccessAction = null;
                     return;
                 }
                 activeJobPollTimer = setTimeout(() => pollJob(jobId), 400);
@@ -1951,7 +1908,6 @@ HTML_TEMPLATE = r"""
             hideContextMenu();
             hideSelectionStashMenu();
             if (!payload || !payload.sha1_list || payload.sha1_list.length === 0) return;
-            pendingPostSuccessAction = payload._afterSuccessAction || null;
             updateProgressDialog({
                 title: payload.title || 'Working…',
                 subtitle: payload.subtitle || '',
@@ -2401,6 +2357,7 @@ HTML_TEMPLATE = r"""
                     bar.style.display = 'none';
                 }
             }
+            refreshKeyboardFocusUI();
         }
 
         function clearSelection() {
@@ -2661,7 +2618,6 @@ HTML_TEMPLATE = r"""
                 sha1_list: sha1List,
                 title,
                 subtitle,
-                _afterSuccessAction: options.afterSuccessAction || null,
             };
             startBackgroundOperation(payload);
         }
@@ -2680,9 +2636,7 @@ HTML_TEMPLATE = r"""
 
         function moveContextTo(target) {
             const sha1List = getContextTargets(menuSha1);
-            moveSha1List(target, sha1List, {
-                afterSuccessAction: buildFastTagsPostAction(),
-            });
+            moveSha1List(target, sha1List);
         }
 
         function moveContextToStash(categoryKey) {
@@ -2690,28 +2644,83 @@ HTML_TEMPLATE = r"""
             moveSha1List(getStashCategoryDir(categoryKey), sha1List, {
                 title: 'Moving to Stash',
                 subtitle: stashCategories.find(x => x.key === categoryKey)?.label || 'Stash',
-                afterSuccessAction: buildFastTagsPostAction(),
             });
         }
 
-        function startCullForShaList(sha1List, subtitle) {
+        async function startCullSelectForShaList(sha1List, subtitle) {
+            hideContextMenu();
+            hideSelectionStashMenu();
             if (!sha1List || sha1List.length === 0) return;
-            startBackgroundOperation({
-                operation: 'cull',
-                sha1_list: sha1List,
-                title: 'Culling Photos',
+            updateProgressDialog({
+                title: 'Cull Select',
+                subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
+                detail: 'Analyzing clusters…',
+                completed: 0,
+                total: sha1List.length,
+                status: 'running',
+            });
+            try {
+                const resp = await fetch('/api/cull_select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sha1_list: sha1List }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== 'ok') {
+                    throw new Error(data.message || 'Cull selection failed.');
+                }
+                selectedSha1s = new Set(data.to_cull || []);
+                applyClusterVisuals(data.clusters || []);
+                refreshSelectionUI();
+                updateProgressDialog({
+                    title: 'Cull Select Complete',
+                    subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
+                    detail: `${(data.to_cull || []).length} photo${(data.to_cull || []).length === 1 ? '' : 's'} selected for culling.`,
+                    completed: Array.isArray(data.to_cull) ? data.to_cull.length : 0,
+                    total: Array.isArray(data.to_cull) ? data.to_cull.length : 0,
+                    status: 'completed',
+                });
+            } catch (err) {
+                console.error(err);
+                updateProgressDialog({
+                    title: 'Cull Select Failed',
+                    subtitle: subtitle || '',
+                    detail: String(err),
+                    completed: 0,
+                    total: 0,
+                    status: 'error',
+                });
+            }
+        }
+
+        function startCullMoveForShaList(sha1List, subtitle) {
+            if (!sha1List || sha1List.length === 0) return;
+            moveSha1List('_cull', sha1List, {
+                title: 'Moving to Cull',
                 subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
             });
         }
 
-        function startCullFromContext() {
+        function startCullSelectFromContext() {
             const sha1List = getContextTargets(menuSha1);
             const subtitle = menuContext.kind === 'hero' ? 'Current card scope' : `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`;
-            startCullForShaList(sha1List, subtitle);
+            startCullSelectForShaList(sha1List, subtitle);
         }
 
-        function startCullSelection() {
-            startCullForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
+        function startCullMoveFromContext() {
+            const sha1List = selectedSha1s.size > 0 ? Array.from(selectedSha1s) : getContextTargets(menuSha1);
+            const subtitle = selectedSha1s.size > 0
+                ? `${selectedSha1s.size} selected`
+                : (menuContext.kind === 'hero' ? 'Current card scope' : `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`);
+            startCullMoveForShaList(sha1List, subtitle);
+        }
+
+        function startCullSelectSelection() {
+            startCullSelectForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
+        }
+
+        function startCullMoveSelection() {
+            startCullMoveForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
         }
 
         function toggleSelectionStashMenu(event) {
@@ -2821,14 +2830,6 @@ HTML_TEMPLATE = r"""
         });
 
         document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.composite-img').forEach(img => {
-                img.dataset.baseSrc = (img.getAttribute('src') || '').split('?')[0];
-                img.addEventListener('load', () => {
-                    img.style.opacity = '';
-                    img.dataset.retryAttempts = '0';
-                });
-            });
-
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -2913,7 +2914,6 @@ class ArchiveStore:
                 conn.execute("ALTER TABLE composite_cache ADD COLUMN selection_version TEXT DEFAULT ''")
             conn.commit()
 
-
     @staticmethod
     def _safe_mtime(path: Path) -> float:
         try:
@@ -2923,7 +2923,6 @@ class ArchiveStore:
 
     def mark_cache_dirty(self) -> None:
         self.cache_dirty = True
-
 
     def load_hero_score_map(self) -> None:
         self.hero_score_map = {}
@@ -2954,6 +2953,7 @@ class ArchiveStore:
         return best
 
     def load_cache(self, force: bool = False) -> None:
+        total_started = time.perf_counter()
         current_db_mtime = self._safe_mtime(self.config.db_path)
         current_hero_db_mtime = self._safe_mtime(self.config.hero_db_path)
 
@@ -2964,6 +2964,13 @@ class ArchiveStore:
             and current_db_mtime == self.media_db_mtime
             and current_hero_db_mtime == self.hero_db_source_mtime
         ):
+            logging.warning(
+                "[CACHE LOAD] total=0.000s | cache_hit=1 | rows=%d | dated=%d | undated=%d | tags=%d",
+                len(self.db_cache) + len(self.undated_cache),
+                len(self.db_cache),
+                len(self.undated_cache),
+                len(self.global_tags),
+            )
             return
 
         if not self.config.db_path.exists():
@@ -2977,17 +2984,26 @@ class ArchiveStore:
             self.cache_loaded = True
             self.cache_dirty = False
             self.cache_revision += 1
+            logging.warning("[CACHE LOAD] total=0.000s | db_missing=1 | rows=0 | dated=0 | undated=0 | tags=0")
             return
 
+        ext_started = time.perf_counter()
         self.init_db_extensions()
-        self.load_hero_score_map()
+        ext_elapsed = time.perf_counter() - ext_started
 
+        hero_started = time.perf_counter()
+        self.load_hero_score_map()
+        hero_elapsed = time.perf_counter() - hero_started
+
+        db_started = time.perf_counter()
         with sqlite3.connect(self.config.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC"
             ).fetchall()
+        db_elapsed = time.perf_counter() - db_started
 
+        build_started = time.perf_counter()
         self.db_cache = []
         self.undated_cache = []
         self.global_tags = defaultdict(list)
@@ -3023,11 +3039,27 @@ class ArchiveStore:
             for tag in item["_tags_list"]:
                 self.global_tags[tag].append(item)
 
+        build_elapsed = time.perf_counter() - build_started
+        total_elapsed = time.perf_counter() - total_started
+
         self.media_db_mtime = current_db_mtime
         self.hero_db_source_mtime = current_hero_db_mtime
         self.cache_loaded = True
         self.cache_dirty = False
         self.cache_revision += 1
+
+        logging.warning(
+            "[CACHE LOAD] total=%.3fs | cache_hit=0 | init_db=%.3fs | hero_scores=%.3fs | db_query=%.3fs | build_indexes=%.3fs | rows=%d | dated=%d | undated=%d | tags=%d",
+            total_elapsed,
+            ext_elapsed,
+            hero_elapsed,
+            db_elapsed,
+            build_elapsed,
+            len(rows),
+            len(self.db_cache),
+            len(self.undated_cache),
+            len(self.global_tags),
+        )
 
     @staticmethod
     def get_top_tags(items: Iterable[dict[str, Any]], limit: int = 3) -> list[str]:
@@ -4472,6 +4504,16 @@ def create_app(config: ArchiveConfig) -> Flask:
     def make_places_action(url: str) -> dict[str, Any]:
         return {"label": "📍 Places", "url": url, "active": False, "classes": "places-action"}
 
+    def log_slow_route(label: str, started: float, **stats: Any) -> None:
+        elapsed = time.perf_counter() - started
+        if elapsed < SLOW_ROUTE_LOG_THRESHOLD_SECONDS:
+            return
+        stat_str = " | ".join(f"{k}={v}" for k, v in stats.items())
+        if stat_str:
+            logging.warning("[SLOW ROUTE] %s %.3fs | %s", label, elapsed, stat_str)
+        else:
+            logging.warning("[SLOW ROUTE] %s %.3fs", label, elapsed)
+
     def render_places_page(page_title: str, breadcrumb: str, context_title: str, scope_type: str, scope_url: str, items: list[dict[str, Any]], extra_actions: list[dict[str, Any]] | None = None) -> str:
         store.load_cache()
         for item in items:
@@ -4558,14 +4600,6 @@ def create_app(config: ArchiveConfig) -> Flask:
                 conn.commit()
 
     def mark_views_dirty_only() -> None:
-        # IMPORTANT:
-        # Do not delete composite JPEGs during ordinary move/trash/stash/cull flows.
-        # Already-rendered pages may still reference those composite hashes, and
-        # removing them causes unrelated hero cards to "disappear" until refresh.
-        #
-        # The next page render will still compute fresh cards because the store is
-        # marked dirty, but existing pages keep working because old composite files
-        # remain available.
         store.mark_cache_dirty()
 
     def safe_destination_relative(base_dir_name: str, rel_fqn: str, sha1: str) -> Path:
@@ -4643,11 +4677,72 @@ def create_app(config: ArchiveConfig) -> Flask:
             'target_dir': target_dir_name,
         }
 
-    def perform_cull(sha1_list: list[str], progress_callback: Any | None = None) -> tuple[bool, str | None, dict[str, Any]]:
+    def build_cull_plan(sha1_list: list[str]) -> tuple[bool, str | None, dict[str, Any]]:
         if not sha1_list:
             return False, "sha1_list required", {}
 
         store.load_cache()
+        all_items = store.db_cache + store.undated_cache
+        item_map = {str(item.get('sha1')): item for item in all_items}
+        items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
+        if not items:
+            return False, "No matching items found", {}
+
+        clusters = _find_clusters_in_items(items, time_threshold_seconds=15)
+        to_cull: list[str] = []
+        cluster_summaries: list[dict[str, Any]] = []
+
+        for idx, cluster in enumerate(clusters, start=1):
+            cluster_sha1s = [str(item.get('sha1')) for item in cluster]
+            keep_count = 2 if len(cluster) > 4 else 1
+            ranked = _rank_sha1s_for_mode(store, cluster_sha1s, 'cull')
+            keepers = [item['sha1'] for item in ranked[:keep_count]]
+            keeper_set = set(keepers)
+            drop_list = [sha for sha in cluster_sha1s if sha not in keeper_set]
+            to_cull.extend(drop_list)
+            cluster_summaries.append({
+                'cluster_id': idx,
+                'size': len(cluster),
+                'gps_bucket': _gps_bucket_key_for_cluster(cluster[0]),
+                'start_time': str(cluster[0].get('final_dt') or ''),
+                'end_time': str(cluster[-1].get('final_dt') or ''),
+                'primary_sha1': keepers[0] if len(keepers) >= 1 else '',
+                'secondary_sha1': keepers[1] if len(keepers) >= 2 else '',
+                'keep_count': keep_count,
+                'keepers': keepers,
+                'dropped': drop_list,
+                'sha1s': cluster_sha1s,
+            })
+
+        # De-duplicate while preserving order
+        seen: set[str] = set()
+        ordered_to_cull: list[str] = []
+        for sha in to_cull:
+            if sha not in seen:
+                seen.add(sha)
+                ordered_to_cull.append(sha)
+
+        return True, None, {
+            'requested': len(sha1_list),
+            'clusters_found': len(clusters),
+            'to_cull': ordered_to_cull,
+            'kept': len(sha1_list) - len(ordered_to_cull),
+            'clusters': cluster_summaries,
+        }
+
+    def perform_cull(sha1_list: list[str], progress_callback: Any | None = None) -> tuple[bool, str | None, dict[str, Any]]:
+        if not sha1_list:
+            return False, "sha1_list required", {}
+
+        if progress_callback:
+            progress_callback(0, 0, "Analyzing clusters…")
+
+        ok, message, plan = build_cull_plan(sha1_list)
+        if not ok:
+            return False, message, {}
+
+        losers = list(plan.get('to_cull') or [])
+        clusters = list(plan.get('clusters') or [])
         all_items = store.db_cache + store.undated_cache
         item_map = {str(item.get('sha1')): item for item in all_items}
         items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
@@ -4765,6 +4860,7 @@ def create_app(config: ArchiveConfig) -> Flask:
         if not ok:
             return jsonify({"status": "error", "message": message}), 404
         invalidate_composites()
+        store.mark_cache_dirty()
         return jsonify({"status": "ok"})
 
     @app.route("/api/rotate_batch", methods=["POST"])
@@ -4787,6 +4883,7 @@ def create_app(config: ArchiveConfig) -> Flask:
 
         if any_success:
             invalidate_composites()
+            store.mark_cache_dirty()
 
         return jsonify({"status": "ok", "results": results})
 
@@ -4869,6 +4966,17 @@ def create_app(config: ArchiveConfig) -> Flask:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok"})
 
+
+    @app.route("/api/cull_select", methods=["POST"])
+    def cull_select():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        ok, message, summary = build_cull_plan([str(x) for x in sha1_list])
+        if not ok:
+            return jsonify({"status": "error", "message": message}), 400
+        return jsonify({"status": "ok", **summary})
 
     @app.route("/api/cull", methods=["POST"])
     def cull_now():
@@ -4959,12 +5067,12 @@ def create_app(config: ArchiveConfig) -> Flask:
     @app.route("/")
     @app.route("/timeline")
     def timeline():
+        route_started = time.perf_counter()
         store.load_cache()
+        decades = sorted({item["_decade"] for item in store.db_cache}, reverse=True)
 
-        def build_timeline_index() -> str:
-            decades = sorted({item["_decade"] for item in store.db_cache}, reverse=True)
+        def build_timeline_page() -> str:
             cards: list[dict[str, Any]] = []
-
             for decade in decades:
                 items = [item for item in store.db_cache if item["_decade"] == decade]
                 cards.append(
@@ -4993,14 +5101,17 @@ def create_app(config: ArchiveConfig) -> Flask:
                 card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        return get_cached_page("timeline-index", "all", build_timeline_index)
+        response = get_cached_page("timeline-index", "all", build_timeline_page)
+        log_slow_route("timeline:index", route_started, cards=len(decades), decades=len(decades))
+        return response
 
     @app.route("/timeline/decade/<decade>")
     def timeline_decade(decade: str):
+        route_started = time.perf_counter()
         store.load_cache()
+        years = sorted({item["_year"] for item in store.db_cache if item["_decade"] == decade}, reverse=True)
 
-        def build_timeline_decade() -> str:
-            years = sorted({item["_year"] for item in store.db_cache if item["_decade"] == decade}, reverse=True)
+        def build_timeline_decade_page() -> str:
             cards: list[dict[str, Any]] = []
 
             for year in years:
@@ -5032,17 +5143,19 @@ def create_app(config: ArchiveConfig) -> Flask:
                 card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        return get_cached_page("timeline-decade", decade, build_timeline_decade)
+        response = get_cached_page("timeline-decade", decade, build_timeline_decade_page)
+        log_slow_route("timeline:decade", route_started, decade=decade, cards=len(years))
+        return response
 
     @app.route("/timeline/year/<year>")
     def timeline_year(year: str):
+        route_started = time.perf_counter()
         store.load_cache()
+        month_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in [i for i in store.db_cache if i["_year"] == year]:
+            month_map[item["_month"]].append(item)
 
-        def build_timeline_year() -> str:
-            month_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-            for item in [i for i in store.db_cache if i["_year"] == year]:
-                month_map[item["_month"]].append(item)
-
+        def build_timeline_year_page() -> str:
             cards: list[dict[str, Any]] = []
             for month_code in sorted(month_map.keys()):
                 imgs = month_map[month_code]
@@ -5073,7 +5186,9 @@ def create_app(config: ArchiveConfig) -> Flask:
                 card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        return get_cached_page("timeline-year", year, build_timeline_year)
+        response = get_cached_page("timeline-year", year, build_timeline_year_page)
+        log_slow_route("timeline:year", route_started, year=year, cards=len(month_map))
+        return response
 
     @app.route("/timeline/month/<year>/<month>")
     def timeline_month(year: str, month: str):
@@ -5126,38 +5241,47 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     @app.route("/undated")
     def undated():
+        route_started = time.perf_counter()
         store.load_cache()
         folder_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in store.undated_cache:
             folder_map[item["_folder_group"]].append(item)
 
-        cards = []
-        for folder_name, imgs in sorted(folder_map.items()):
-            cards.append(
-                {
-                    "id": f"u_{folder_name}",
-                    "title": folder_name,
-                    "subtitle": f"{len(imgs)} items",
-                    "url": f"/undated/{folder_name}",
-                    "heroes": imgs,
-                    "tags": store.get_top_tags(imgs),
-                }
+        folder_names = sorted(folder_map.keys())
+
+        def build_undated_page() -> str:
+            cards = []
+            for folder_name in folder_names:
+                imgs = folder_map[folder_name]
+                cards.append(
+                    {
+                        "id": f"u_{folder_name}",
+                        "title": folder_name,
+                        "subtitle": f"{len(imgs)} items",
+                        "url": f"/undated/{folder_name}",
+                        "heroes": imgs,
+                        "tags": store.get_top_tags(imgs),
+                    }
+                )
+
+            for card in cards:
+                card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
+
+            manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
+            return render_page(
+                page_title="Undated Archive",
+                active_tab="undated",
+                banner_img="hero-undated.png",
+                breadcrumb="Undated",
+                action_links=[make_places_action('/places/undated')],
+                cards=cards,
+                manifests=manifests,
+                card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        for card in cards:
-            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
-
-        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        return render_page(
-            page_title="Undated Archive",
-            active_tab="undated",
-            banner_img="hero-undated.png",
-            breadcrumb="Undated",
-            action_links=[make_places_action('/places/undated')],
-            cards=cards,
-            manifests=manifests,
-            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
-        )
+        response = get_cached_page("undated-index", "all", build_undated_page)
+        log_slow_route("undated:index", route_started, cards=len(folder_names))
+        return response
 
     @app.route("/undated/<folder>")
     def undated_folder(folder: str):
@@ -5176,26 +5300,28 @@ def create_app(config: ArchiveConfig) -> Flask:
     @app.route("/folder")
     @app.route("/folder/<path:subpath>")
     def explorer(subpath: str = ""):
+        route_started = time.perf_counter()
         store.load_cache()
+        all_media = store.db_cache + store.undated_cache
+        prefix = f"{subpath}/" if subpath else ""
+        unique_subfolders: set[str] = set()
+        direct_files: list[dict[str, Any]] = []
+
+        for item in all_media:
+            web_path = item["_web_path"]
+            if not web_path.startswith(prefix):
+                continue
+            remainder = web_path[len(prefix):]
+            if "/" in remainder:
+                unique_subfolders.add(remainder.split("/")[0])
+            else:
+                direct_files.append(item)
+
+        folder_names = sorted(unique_subfolders)
 
         def build_explorer_page() -> str:
-            all_media = store.db_cache + store.undated_cache
-            prefix = f"{subpath}/" if subpath else ""
-            unique_subfolders: set[str] = set()
-            direct_files: list[dict[str, Any]] = []
-
-            for item in all_media:
-                web_path = item["_web_path"]
-                if not web_path.startswith(prefix):
-                    continue
-                remainder = web_path[len(prefix):]
-                if "/" in remainder:
-                    unique_subfolders.add(remainder.split("/")[0])
-                else:
-                    direct_files.append(item)
-
             cards = []
-            for folder_name in sorted(unique_subfolders):
+            for folder_name in folder_names:
                 items = [
                     item
                     for item in all_media
@@ -5232,17 +5358,22 @@ def create_app(config: ArchiveConfig) -> Flask:
                 card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        return get_cached_page("explorer", subpath or "/", build_explorer_page)
+        response = get_cached_page("explorer", subpath or "/", build_explorer_page)
+        log_slow_route("explorer", route_started, subpath=subpath or "/", cards=len(folder_names), direct_files=len(direct_files))
+        return response
 
     @app.route("/tags")
     @app.route("/tags/<tag>")
     def tags(tag: str | None = None):
+        route_started = time.perf_counter()
         store.load_cache()
 
         if tag is None:
-            def build_tags_index() -> str:
+            tag_names = sorted(store.global_tags.keys())
+
+            def build_tags_index_page() -> str:
                 cards = []
-                for tag_name in sorted(store.global_tags.keys()):
+                for tag_name in tag_names:
                     imgs = store.global_tags[tag_name]
                     cards.append(
                         {
@@ -5270,10 +5401,13 @@ def create_app(config: ArchiveConfig) -> Flask:
                     card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
                 )
 
-            return get_cached_page("tags-index", "all", build_tags_index)
+            response = get_cached_page("tags-index", "all", build_tags_index_page)
+            log_slow_route("tags:index", route_started, tags=len(tag_names))
+            return response
 
-        def build_tag_detail() -> str:
-            imgs = store.global_tags.get(tag, [])
+        imgs = store.global_tags.get(tag, [])
+
+        def build_tags_detail_page() -> str:
             return render_page(
                 page_title=f"#{tag}",
                 active_tab="tags",
@@ -5284,7 +5418,22 @@ def create_app(config: ArchiveConfig) -> Flask:
                 manifests={"main_gallery": store.build_manifest(imgs)},
             )
 
-        return get_cached_page("tags-detail", str(tag or ""), build_tag_detail)
+        response = get_cached_page("tags-detail", str(tag or ""), build_tags_detail_page)
+        log_slow_route("tags:detail", route_started, tag=tag, photos=len(imgs))
+        return response
+
+        imgs = store.global_tags.get(tag, [])
+        response = render_page(
+            page_title=f"#{tag}",
+            active_tab="tags",
+            banner_img="hero-tags.png",
+            breadcrumb=f"<a href='/tags'>Tags</a> / {tag}",
+            action_links=[make_places_action(f'/places/tags/{tag}')],
+            photos=imgs,
+            manifests={"main_gallery": store.build_manifest(imgs)},
+        )
+        log_slow_route("tags:detail", route_started, tag=tag, photos=len(imgs))
+        return response
 
     @app.route("/places")
     def places_root():
@@ -5520,63 +5669,7 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     @app.route("/composite/<composite_name>.jpg")
     def serve_composite(composite_name: str):
-        filename = f"{composite_name}.jpg"
-        composite_path = config.composite_dir / filename
-
-        if not composite_path.exists() and config.db_path.exists():
-            try:
-                with sqlite3.connect(config.db_path) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cached = conn.execute(
-                        "SELECT sha1_list FROM composite_cache WHERE composite_hash = ? LIMIT 1",
-                        (composite_name,),
-                    ).fetchone()
-
-                    if cached:
-                        sha1_list_raw = str(cached["sha1_list"] or "")
-                        sha1_list = [s.strip() for s in sha1_list_raw.split(",") if s.strip()][:16]
-                        if sha1_list:
-                            rows = conn.execute(
-                                f"SELECT sha1, rel_fqn FROM media WHERE sha1 IN ({','.join('?' for _ in sha1_list)})",
-                                tuple(sha1_list),
-                            ).fetchall()
-                            row_map = {str(r["sha1"]): dict(r) for r in rows}
-
-                            canvas = Image.new("RGB", (400, 400), (13, 13, 13))
-                            pasted_any = False
-
-                            for idx, sha1 in enumerate(sha1_list):
-                                row = row_map.get(str(sha1))
-                                if not row:
-                                    continue
-
-                                thumb_path = config.thumb_dir / f"{sha1}.jpg"
-                                media_path = config.archive_root / str(row["rel_fqn"])
-                                source_path = thumb_path if thumb_path.exists() else media_path
-                                if not source_path.exists():
-                                    continue
-
-                                try:
-                                    with Image.open(source_path) as img:
-                                        img = ImageOps.exif_transpose(img)
-                                        img.thumbnail((100, 100))
-                                        width, height = img.size
-                                        x = (idx % 4) * 100 + (100 - width) // 2
-                                        y = (idx // 4) * 100 + (100 - height) // 2
-                                        canvas.paste(img, (x, y))
-                                        pasted_any = True
-                                except Exception:
-                                    continue
-
-                            if pasted_any:
-                                config.composite_dir.mkdir(parents=True, exist_ok=True)
-                                canvas.save(composite_path, "JPEG", quality=85)
-            except Exception:
-                pass
-
-        if composite_path.exists():
-            return send_from_directory(config.composite_dir, filename)
-        return "Not Found", 404
+        return send_from_directory(config.composite_dir, f"{composite_name}.jpg")
 
     @app.route("/thumbs/<filename>")
     def serve_thumb(filename: str):
