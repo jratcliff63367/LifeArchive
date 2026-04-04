@@ -960,6 +960,8 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
+        <div class="menu-item" data-role="select-filesystem-date" onclick="selectSpecialFromContext('filesystem_date')">Select File System Date</div>
+        <div class="menu-item" data-role="select-no-gps" onclick="selectSpecialFromContext('no_gps')">Select No GPS</div>
         <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
         <div class="menu-item" data-role="cull-move" onclick="startCullMoveFromContext()">Cull Move</div>
         <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
@@ -1826,6 +1828,13 @@ HTML_TEMPLATE = r"""
             const menu = document.getElementById('context-menu');
             if (!menu) return;
 
+            const photoGridOnly = ['select-filesystem-date', 'select-no-gps', 'cull-select', 'cull-move'];
+            photoGridOnly.forEach(role => {
+                const el = menu.querySelector(`[data-role="${role}"]`);
+                if (!el) return;
+                el.classList.toggle('hidden', kind !== 'photo-grid');
+            });
+
             const photoOnly = ['rotate-cw', 'rotate-ccw', 'debug'];
             photoOnly.forEach(role => {
                 const el = menu.querySelector(`[data-role="${role}"]`);
@@ -1833,12 +1842,6 @@ HTML_TEMPLATE = r"""
                 el.classList.toggle('hidden', kind !== 'photo-grid' && kind !== 'lightbox');
             });
 
-            const cullOnly = ['cull-select', 'cull-move'];
-            cullOnly.forEach(role => {
-                const el = menu.querySelector(`[data-role="${role}"]`);
-                if (!el) return;
-                el.classList.toggle('hidden', kind !== 'photo-grid');
-            });
         }
 
         function getJobPhaseLabel(status) {
@@ -2387,6 +2390,43 @@ HTML_TEMPLATE = r"""
                 selectedSha1s.add(card.dataset.sha);
             });
             refreshSelectionUI();
+        }
+
+        async function selectSpecialVisible(mode) {
+            const sha1List = Array.from(document.querySelectorAll('.photo-card[data-sha]'))
+                .map(card => card.dataset.sha)
+                .filter(Boolean);
+            if (!sha1List.length) return;
+
+            hideContextMenu();
+            hideSelectionStashMenu();
+
+            try {
+                const resp = await fetch('/api/select_special', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sha1_list: sha1List,
+                        mode: mode,
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== 'ok') {
+                    alert(data.message || 'Special selection failed.');
+                    return;
+                }
+
+                clearClusterVisuals();
+                selectedSha1s = new Set(data.matches || []);
+                refreshSelectionUI();
+            } catch (err) {
+                console.error(err);
+                alert('Special selection request failed.');
+            }
+        }
+
+        function selectSpecialFromContext(mode) {
+            return selectSpecialVisible(mode);
         }
 
         function getContextTargets(clickedSha1) {
@@ -4999,6 +5039,56 @@ def create_app(config: ArchiveConfig) -> Flask:
         if not ok:
             return jsonify({"status": "error", "message": message}), 400
         return jsonify({"status": "ok", "summary": summary})
+    @app.route("/api/select_special", methods=["POST"])
+    def select_special():
+        payload = request.json or {}
+        sha1_list = payload.get("sha1_list") or []
+        mode = str(payload.get("mode") or "").strip().lower()
+
+        if not isinstance(sha1_list, list) or not sha1_list:
+            return jsonify({"status": "error", "message": "sha1_list required"}), 400
+        if mode not in {"filesystem_date", "no_gps"}:
+            return jsonify({"status": "error", "message": "invalid mode"}), 400
+
+        store.load_cache()
+        all_items = store.db_cache + store.undated_cache
+        item_map = {str(item.get("sha1")): item for item in all_items}
+
+        matches: list[str] = []
+        for raw_sha1 in sha1_list:
+            sha1 = str(raw_sha1)
+            item = item_map.get(sha1)
+            if not item:
+                continue
+
+            if mode == "filesystem_date":
+                dt_source = str(item.get("dt_source") or "").strip().lower().replace("-", " ").replace("_", " ")
+                is_filesystem_date = (
+                    dt_source in {
+                        "filesystem",
+                        "file system",
+                        "file modification",
+                        "file modified",
+                        "mtime",
+                        "modified time",
+                    }
+                    or ("file" in dt_source and "modification" in dt_source)
+                    or ("file" in dt_source and "modified" in dt_source)
+                )
+
+                if is_filesystem_date:
+                    matches.append(sha1)
+            elif mode == "no_gps":
+                if not store.has_valid_gps(item):
+                    matches.append(sha1)
+
+        return jsonify({
+            "status": "ok",
+            "mode": mode,
+            "matches": matches,
+            "count": len(matches),
+        })
+
 
     @app.route("/api/select_by_formula", methods=["POST"])
     def select_by_formula():
