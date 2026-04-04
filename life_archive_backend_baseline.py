@@ -77,7 +77,6 @@ werkzeug_log.setLevel(logging.ERROR)
 # Defaults / constants
 # ---------------------------------------------------------------------------
 DEFAULT_THEME_COLOR = "#bb86fc"
-SLOW_ROUTE_LOG_THRESHOLD_SECONDS = 0.75
 TAG_EXCLUSIONS = {
     "pictures",
     "photos",
@@ -95,15 +94,7 @@ STASH_CATEGORIES = [
     {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
     {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
     {"key": "personal-artwork", "label": "Personal Artwork", "dir": "_stash/personal-artwork"},
-    {"key": "museum", "label": "museum", "dir": "_stash/museum"},
     {"key": "Movies16mm", "label": "Moviews16mm", "dir": "_stash/movies-16mm"},
-    {"key": "CarShow", "label": "CarShow", "dir": "_stash/carshow"},
-    {"key": "449-Oxford-Lane", "label": "449-Oxford-Lane", "dir": "_stash/449-Oxford-Lane"},
-    {"key": "445-Oxford-Lane", "label": "445-Oxford-Lane", "dir": "_stash/445-Oxford-Lane"},
-    {"key": "Terrys", "label": "Terrys", "dir": "_stash/terrys"},
-    {"key": "models", "label": "Models", "dir": "_stash/models"},
-    {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
-    {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -194,10 +185,6 @@ HTML_TEMPLATE = r"""
         .photo-card.selected {
             border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(187, 134, 252, 0.35);
-        }
-        .photo-card.keyboard-focus {
-            border-color: #ffffff;
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 0 5px rgba(187, 134, 252, 0.28);
         }
         .photo-select-wrap {
             position: absolute;
@@ -475,11 +462,9 @@ HTML_TEMPLATE = r"""
             border: 1px solid #444;
             z-index: 100000;
             min-width: 250px;
-            max-height: calc(100vh - 16px);
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             padding: 6px 0;
-            overflow: visible;
         }
         .menu-item {
             position: relative;
@@ -507,9 +492,6 @@ HTML_TEMPLATE = r"""
             top: 0;
             left: 100%;
             min-width: 220px;
-            max-height: calc(100vh - 16px);
-            overflow-y: auto;
-            overflow-x: hidden;
             background: #222;
             border: 1px solid #444;
             border-radius: 8px;
@@ -959,8 +941,7 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
-        <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
-        <div class="menu-item" data-role="cull-move" onclick="startCullMoveFromContext()">Cull Move</div>
+        <div class="menu-item" data-role="cull" onclick="startCullFromContext()">Cull</div>
         <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
         <div class="menu-item has-submenu" data-role="stash">Stash <span class="menu-arrow">▸</span>
             <div class="submenu">
@@ -1506,8 +1487,7 @@ HTML_TEMPLATE = r"""
     <div id="selection-bar" class="selection-bar">
         <span id="selection-count">0 selected</span>
         <button type="button" onclick="selectAllVisible()">Select All</button>
-        <button type="button" onclick="startCullSelectSelection()">Cull Select</button>
-        <button type="button" onclick="startCullMoveSelection()">Cull Move</button>
+        <button type="button" onclick="startCullSelection()">Cull</button>
         <button type="button" onclick="rotateSelection(90)">Rotate 90° Clockwise ↻</button>
         <button type="button" onclick="rotateSelection(270)">Rotate 90° Counter ↺</button>
         <button type="button" onclick="moveCurrentSelectionTo('trash')">Move to Trash</button>
@@ -1621,125 +1601,6 @@ HTML_TEMPLATE = r"""
         let showFaceOverlay = false;
         let activeJobId = null;
         let activeJobPollTimer = null;
-        let focusedPhotoSha1 = null;
-
-        function getVisiblePhotoCards() {
-            return Array.from(document.querySelectorAll('.photo-card[data-sha]'));
-        }
-
-        function getPhotoCardBySha1(sha1) {
-            if (!sha1) return null;
-            return document.querySelector(`.photo-card[data-sha="${sha1}"]`);
-        }
-
-        function refreshKeyboardFocusUI() {
-            const cards = getVisiblePhotoCards();
-            let hasFocusedCard = false;
-            cards.forEach(card => {
-                const isFocused = focusedPhotoSha1 && card.dataset.sha === focusedPhotoSha1;
-                card.classList.toggle('keyboard-focus', !!isFocused);
-                if (isFocused) hasFocusedCard = true;
-            });
-            if (!hasFocusedCard) {
-                focusedPhotoSha1 = null;
-            }
-        }
-
-        function setFocusedPhoto(sha1, shouldScroll = true) {
-            const card = getPhotoCardBySha1(sha1);
-            if (!card) return;
-            focusedPhotoSha1 = sha1;
-            refreshKeyboardFocusUI();
-            if (shouldScroll) {
-                card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-            }
-        }
-
-        function ensureFocusedPhoto() {
-            const cards = getVisiblePhotoCards();
-            if (cards.length === 0) return null;
-            const existing = focusedPhotoSha1 ? getPhotoCardBySha1(focusedPhotoSha1) : null;
-            if (existing) return existing;
-            focusedPhotoSha1 = cards[0].dataset.sha;
-            refreshKeyboardFocusUI();
-            return cards[0];
-        }
-
-        function groupPhotoCardsIntoRows() {
-            const cards = getVisiblePhotoCards();
-            const rows = [];
-            const tolerance = 24;
-            cards.forEach(card => {
-                const rect = card.getBoundingClientRect();
-                const top = rect.top;
-                let row = rows.find(r => Math.abs(r.top - top) <= tolerance);
-                if (!row) {
-                    row = { top, cards: [] };
-                    rows.push(row);
-                }
-                row.cards.push({
-                    card,
-                    left: rect.left,
-                    centerX: rect.left + (rect.width / 2),
-                });
-            });
-            rows.sort((a, b) => a.top - b.top);
-            rows.forEach(row => row.cards.sort((a, b) => a.left - b.left));
-            return rows;
-        }
-
-        function moveKeyboardFocus(direction) {
-            const current = ensureFocusedPhoto();
-            if (!current) return;
-            const rows = groupPhotoCardsIntoRows();
-            if (!rows.length) return;
-
-            let rowIndex = -1;
-            let colIndex = -1;
-            for (let i = 0; i < rows.length; i++) {
-                const j = rows[i].cards.findIndex(entry => entry.card.dataset.sha === current.dataset.sha);
-                if (j >= 0) {
-                    rowIndex = i;
-                    colIndex = j;
-                    break;
-                }
-            }
-            if (rowIndex < 0 || colIndex < 0) return;
-
-            let target = null;
-            if (direction === 'left') {
-                target = rows[rowIndex].cards[Math.max(0, colIndex - 1)]?.card || null;
-            } else if (direction === 'right') {
-                target = rows[rowIndex].cards[Math.min(rows[rowIndex].cards.length - 1, colIndex + 1)]?.card || null;
-            } else {
-                const currentCenter = rows[rowIndex].cards[colIndex].centerX;
-                const targetRowIndex = direction === 'up' ? rowIndex - 1 : rowIndex + 1;
-                if (targetRowIndex >= 0 && targetRowIndex < rows.length) {
-                    const targetRow = rows[targetRowIndex].cards;
-                    let bestIdx = 0;
-                    let bestDist = Infinity;
-                    for (let i = 0; i < targetRow.length; i++) {
-                        const dist = Math.abs(targetRow[i].centerX - currentCenter);
-                        if (dist < bestDist) {
-                            bestDist = dist;
-                            bestIdx = i;
-                        }
-                    }
-                    target = targetRow[bestIdx]?.card || null;
-                }
-            }
-
-            if (target) {
-                setFocusedPhoto(target.dataset.sha, true);
-            }
-        }
-
-        function toggleFocusedPhotoSelection() {
-            const current = ensureFocusedPhoto();
-            if (!current) return;
-            toggleSelection(current.dataset.sha);
-            setFocusedPhoto(current.dataset.sha, false);
-        }
 
         function hideContextMenu() {
             const menu = document.getElementById('context-menu');
@@ -1749,64 +1610,6 @@ HTML_TEMPLATE = r"""
         function hideSelectionStashMenu() {
             const menu = document.getElementById('selection-stash-menu');
             if (menu) menu.classList.remove('open');
-        }
-
-        function clampContextMenuToViewport(menu, clientX, clientY) {
-            if (!menu) return;
-            const margin = 8;
-            menu.style.left = `${clientX}px`;
-            menu.style.top = `${clientY}px`;
-
-            const rect = menu.getBoundingClientRect();
-            let left = clientX;
-            let top = clientY;
-
-            if (rect.right > window.innerWidth - margin) {
-                left = Math.max(margin, window.innerWidth - rect.width - margin);
-            }
-            if (rect.bottom > window.innerHeight - margin) {
-                top = Math.max(margin, window.innerHeight - rect.height - margin);
-            }
-
-            menu.style.left = `${left}px`;
-            menu.style.top = `${top}px`;
-        }
-
-        function adjustContextSubmenus() {
-            const menu = document.getElementById('context-menu');
-            if (!menu) return;
-            const margin = 8;
-            menu.querySelectorAll('.submenu').forEach(submenu => {
-                submenu.style.top = '0px';
-                submenu.style.left = '100%';
-                submenu.style.right = 'auto';
-
-                const parent = submenu.parentElement;
-                if (!parent) return;
-                const parentRect = parent.getBoundingClientRect();
-
-                submenu.style.display = 'block';
-                submenu.style.visibility = 'hidden';
-
-                const rect = submenu.getBoundingClientRect();
-
-                let top = 0;
-                if (rect.bottom > window.innerHeight - margin) {
-                    top = Math.min(0, (window.innerHeight - margin) - rect.bottom);
-                }
-                if (parentRect.top + top < margin) {
-                    top = margin - parentRect.top;
-                }
-
-                if (rect.right > window.innerWidth - margin) {
-                    submenu.style.left = 'auto';
-                    submenu.style.right = '100%';
-                }
-
-                submenu.style.top = `${top}px`;
-                submenu.style.visibility = '';
-                submenu.style.display = '';
-            });
         }
 
         function getStashCategoryDir(categoryKey) {
@@ -2357,7 +2160,6 @@ HTML_TEMPLATE = r"""
                     bar.style.display = 'none';
                 }
             }
-            refreshKeyboardFocusUI();
         }
 
         function clearSelection() {
@@ -2536,8 +2338,8 @@ HTML_TEMPLATE = r"""
             configureContextMenuFor(kind);
             const menu = document.getElementById('context-menu');
             menu.style.display = 'block';
-            clampContextMenuToViewport(menu, e.clientX, e.clientY);
-            adjustContextSubmenus();
+            menu.style.left = e.clientX + 'px';
+            menu.style.top = e.clientY + 'px';
         }
 
         function handleCtx(e, sha1) {
@@ -2558,7 +2360,6 @@ HTML_TEMPLATE = r"""
         }
 
         function rotateImage(degrees) {
-            hideContextMenu();
             const targets = getContextTargets(menuSha1);
             if (targets.length > 1) {
                 fetch('/api/rotate_batch', {
@@ -2647,80 +2448,24 @@ HTML_TEMPLATE = r"""
             });
         }
 
-        async function startCullSelectForShaList(sha1List, subtitle) {
-            hideContextMenu();
-            hideSelectionStashMenu();
+        function startCullForShaList(sha1List, subtitle) {
             if (!sha1List || sha1List.length === 0) return;
-            updateProgressDialog({
-                title: 'Cull Select',
-                subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
-                detail: 'Analyzing clusters…',
-                completed: 0,
-                total: sha1List.length,
-                status: 'running',
-            });
-            try {
-                const resp = await fetch('/api/cull_select', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sha1_list: sha1List }),
-                });
-                const data = await resp.json();
-                if (!resp.ok || data.status !== 'ok') {
-                    throw new Error(data.message || 'Cull selection failed.');
-                }
-                selectedSha1s = new Set(data.to_cull || []);
-                applyClusterVisuals(data.clusters || []);
-                refreshSelectionUI();
-                updateProgressDialog({
-                    title: 'Cull Select Complete',
-                    subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
-                    detail: `${(data.to_cull || []).length} photo${(data.to_cull || []).length === 1 ? '' : 's'} selected for culling.`,
-                    completed: Array.isArray(data.to_cull) ? data.to_cull.length : 0,
-                    total: Array.isArray(data.to_cull) ? data.to_cull.length : 0,
-                    status: 'completed',
-                });
-            } catch (err) {
-                console.error(err);
-                updateProgressDialog({
-                    title: 'Cull Select Failed',
-                    subtitle: subtitle || '',
-                    detail: String(err),
-                    completed: 0,
-                    total: 0,
-                    status: 'error',
-                });
-            }
-        }
-
-        function startCullMoveForShaList(sha1List, subtitle) {
-            if (!sha1List || sha1List.length === 0) return;
-            moveSha1List('_cull', sha1List, {
-                title: 'Moving to Cull',
+            startBackgroundOperation({
+                operation: 'cull',
+                sha1_list: sha1List,
+                title: 'Culling Photos',
                 subtitle: subtitle || `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`,
             });
         }
 
-        function startCullSelectFromContext() {
+        function startCullFromContext() {
             const sha1List = getContextTargets(menuSha1);
             const subtitle = menuContext.kind === 'hero' ? 'Current card scope' : `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`;
-            startCullSelectForShaList(sha1List, subtitle);
+            startCullForShaList(sha1List, subtitle);
         }
 
-        function startCullMoveFromContext() {
-            const sha1List = selectedSha1s.size > 0 ? Array.from(selectedSha1s) : getContextTargets(menuSha1);
-            const subtitle = selectedSha1s.size > 0
-                ? `${selectedSha1s.size} selected`
-                : (menuContext.kind === 'hero' ? 'Current card scope' : `${sha1List.length} photo${sha1List.length === 1 ? '' : 's'}`);
-            startCullMoveForShaList(sha1List, subtitle);
-        }
-
-        function startCullSelectSelection() {
-            startCullSelectForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
-        }
-
-        function startCullMoveSelection() {
-            startCullMoveForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
+        function startCullSelection() {
+            startCullForShaList(Array.from(selectedSha1s), `${selectedSha1s.size} selected`);
         }
 
         function toggleSelectionStashMenu(event) {
@@ -2760,97 +2505,40 @@ HTML_TEMPLATE = r"""
             }
         };
 
-        window.addEventListener('pageshow', (event) => {
-            if (event.persisted) {
-                window.location.reload();
-            }
-        });
-
-        document.addEventListener('keydown', (e) => {
-            const activeEl = document.activeElement;
-            const targetTag = (activeEl && activeEl.tagName ? activeEl.tagName.toLowerCase() : '');
-            const activeIsCheckbox = !!(activeEl && activeEl.classList && activeEl.classList.contains('photo-select-checkbox'));
-            const isTextInput = targetTag === 'textarea' || (targetTag === 'input' && !activeIsCheckbox);
-
+        document.onkeydown = (e) => {
+            const targetTag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
+            const isTextInput = targetTag === 'input' || targetTag === 'textarea';
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 e.preventDefault();
                 selectAllVisible();
                 return;
             }
-
             if (e.key === 'Escape') {
                 if (selectedSha1s.size > 0) {
                     clearSelection();
                     return;
                 }
                 closeLB();
-                return;
             }
-
             if (document.getElementById('lightbox').classList.contains('active')) {
-                if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    changeImg(1);
-                    return;
-                }
-                if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    changeImg(-1);
-                    return;
-                }
-            } else if (!isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
-                if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    moveKeyboardFocus('right');
-                    return;
-                }
-                if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    moveKeyboardFocus('left');
-                    return;
-                }
-                if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    moveKeyboardFocus('up');
-                    return;
-                }
-                if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    moveKeyboardFocus('down');
-                    return;
-                }
-                if (e.key === ' ' || e.code === 'Space') {
-                    e.preventDefault();
-                    toggleFocusedPhotoSelection();
-                    return;
-                }
+                if (e.key === 'ArrowRight') changeImg(1);
+                if (e.key === 'ArrowLeft') changeImg(-1);
             }
-
             if (e.key.toLowerCase() === 'e') toggleSidebar();
-        });
+        };
 
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    setFocusedPhoto(cb.dataset.sha, false);
                     toggleSelection(cb.dataset.sha);
                 });
-            });
-
-            document.querySelectorAll('.photo-card[data-sha]').forEach(card => {
-                card.addEventListener('click', () => setFocusedPhoto(card.dataset.sha, false));
-                card.addEventListener('mousedown', () => setFocusedPhoto(card.dataset.sha, false));
             });
 
             document.querySelectorAll('.nav-bar a, .tag-pill, .breadcrumb a, .grid a').forEach(link => {
                 link.addEventListener('click', () => clearSelection());
             });
 
-            const firstCard = getVisiblePhotoCards()[0];
-            if (firstCard) {
-                focusedPhotoSha1 = firstCard.dataset.sha;
-            }
             refreshSelectionUI();
         });
     </script>
@@ -2890,6 +2578,7 @@ class ArchiveStore:
         self.cache_dirty: bool = True
         self.media_db_mtime: float = 0.0
         self.hero_db_source_mtime: float = 0.0
+        self.cache_revision: int = 0
         self.config.composite_dir.mkdir(parents=True, exist_ok=True)
 
     def is_excluded_tag(self, tag: str) -> bool:
@@ -2954,7 +2643,6 @@ class ArchiveStore:
         return best
 
     def load_cache(self, force: bool = False) -> None:
-        total_started = time.perf_counter()
         current_db_mtime = self._safe_mtime(self.config.db_path)
         current_hero_db_mtime = self._safe_mtime(self.config.hero_db_path)
 
@@ -2965,13 +2653,6 @@ class ArchiveStore:
             and current_db_mtime == self.media_db_mtime
             and current_hero_db_mtime == self.hero_db_source_mtime
         ):
-            logging.warning(
-                "[CACHE LOAD] total=0.000s | cache_hit=1 | rows=%d | dated=%d | undated=%d | tags=%d",
-                len(self.db_cache) + len(self.undated_cache),
-                len(self.db_cache),
-                len(self.undated_cache),
-                len(self.global_tags),
-            )
             return
 
         if not self.config.db_path.exists():
@@ -2984,26 +2665,18 @@ class ArchiveStore:
             self.hero_db_source_mtime = current_hero_db_mtime
             self.cache_loaded = True
             self.cache_dirty = False
-            logging.warning("[CACHE LOAD] total=0.000s | db_missing=1")
+            self.cache_revision += 1
             return
 
-        ext_started = time.perf_counter()
         self.init_db_extensions()
-        ext_elapsed = time.perf_counter() - ext_started
-
-        hero_started = time.perf_counter()
         self.load_hero_score_map()
-        hero_elapsed = time.perf_counter() - hero_started
 
-        db_started = time.perf_counter()
         with sqlite3.connect(self.config.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM media WHERE is_deleted = 0 ORDER BY final_dt DESC"
             ).fetchall()
-        db_elapsed = time.perf_counter() - db_started
 
-        build_started = time.perf_counter()
         self.db_cache = []
         self.undated_cache = []
         self.global_tags = defaultdict(list)
@@ -3039,26 +2712,11 @@ class ArchiveStore:
             for tag in item["_tags_list"]:
                 self.global_tags[tag].append(item)
 
-        build_elapsed = time.perf_counter() - build_started
-        total_elapsed = time.perf_counter() - total_started
-
         self.media_db_mtime = current_db_mtime
         self.hero_db_source_mtime = current_hero_db_mtime
         self.cache_loaded = True
         self.cache_dirty = False
-
-        logging.warning(
-            "[CACHE LOAD] total=%.3fs | cache_hit=0 | init_db=%.3fs | hero_scores=%.3fs | db_query=%.3fs | build_indexes=%.3fs | rows=%d | dated=%d | undated=%d | tags=%d",
-            total_elapsed,
-            ext_elapsed,
-            hero_elapsed,
-            db_elapsed,
-            build_elapsed,
-            len(rows),
-            len(self.db_cache),
-            len(self.undated_cache),
-            len(self.global_tags),
-        )
+        self.cache_revision += 1
 
     @staticmethod
     def get_top_tags(items: Iterable[dict[str, Any]], limit: int = 3) -> list[str]:
@@ -4439,6 +4097,22 @@ def create_app(config: ArchiveConfig) -> Flask:
     places_map_service = PlacesMapService()
     job_lock = threading.Lock()
     jobs: dict[str, dict[str, Any]] = {}
+    page_html_cache: dict[tuple[int, str, str], str] = {}
+
+    def get_cached_page(cache_group: str, cache_key: str, builder: Any) -> str:
+        key = (int(store.cache_revision), cache_group, cache_key)
+        cached = page_html_cache.get(key)
+        if cached is not None:
+            return cached
+        html = builder()
+        page_html_cache[key] = html
+        if len(page_html_cache) > 256:
+            stale_keys = [k for k in list(page_html_cache.keys()) if k[0] != int(store.cache_revision)]
+            for stale in stale_keys[:128]:
+                page_html_cache.pop(stale, None)
+            while len(page_html_cache) > 256:
+                page_html_cache.pop(next(iter(page_html_cache)))
+        return html
 
     def create_job(title: str, subtitle: str = '', total: int = 0) -> str:
         job_id = uuid.uuid4().hex
@@ -4486,16 +4160,6 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     def make_places_action(url: str) -> dict[str, Any]:
         return {"label": "📍 Places", "url": url, "active": False, "classes": "places-action"}
-
-    def log_slow_route(label: str, started: float, **stats: Any) -> None:
-        elapsed = time.perf_counter() - started
-        if elapsed < SLOW_ROUTE_LOG_THRESHOLD_SECONDS:
-            return
-        stat_str = " | ".join(f"{k}={v}" for k, v in stats.items())
-        if stat_str:
-            logging.warning("[SLOW ROUTE] %s %.3fs | %s", label, elapsed, stat_str)
-        else:
-            logging.warning("[SLOW ROUTE] %s %.3fs", label, elapsed)
 
     def render_places_page(page_title: str, breadcrumb: str, context_title: str, scope_type: str, scope_url: str, items: list[dict[str, Any]], extra_actions: list[dict[str, Any]] | None = None) -> str:
         store.load_cache()
@@ -4658,72 +4322,11 @@ def create_app(config: ArchiveConfig) -> Flask:
             'target_dir': target_dir_name,
         }
 
-    def build_cull_plan(sha1_list: list[str]) -> tuple[bool, str | None, dict[str, Any]]:
-        if not sha1_list:
-            return False, "sha1_list required", {}
-
-        store.load_cache()
-        all_items = store.db_cache + store.undated_cache
-        item_map = {str(item.get('sha1')): item for item in all_items}
-        items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
-        if not items:
-            return False, "No matching items found", {}
-
-        clusters = _find_clusters_in_items(items, time_threshold_seconds=15)
-        to_cull: list[str] = []
-        cluster_summaries: list[dict[str, Any]] = []
-
-        for idx, cluster in enumerate(clusters, start=1):
-            cluster_sha1s = [str(item.get('sha1')) for item in cluster]
-            keep_count = 2 if len(cluster) > 4 else 1
-            ranked = _rank_sha1s_for_mode(store, cluster_sha1s, 'cull')
-            keepers = [item['sha1'] for item in ranked[:keep_count]]
-            keeper_set = set(keepers)
-            drop_list = [sha for sha in cluster_sha1s if sha not in keeper_set]
-            to_cull.extend(drop_list)
-            cluster_summaries.append({
-                'cluster_id': idx,
-                'size': len(cluster),
-                'gps_bucket': _gps_bucket_key_for_cluster(cluster[0]),
-                'start_time': str(cluster[0].get('final_dt') or ''),
-                'end_time': str(cluster[-1].get('final_dt') or ''),
-                'primary_sha1': keepers[0] if len(keepers) >= 1 else '',
-                'secondary_sha1': keepers[1] if len(keepers) >= 2 else '',
-                'keep_count': keep_count,
-                'keepers': keepers,
-                'dropped': drop_list,
-                'sha1s': cluster_sha1s,
-            })
-
-        # De-duplicate while preserving order
-        seen: set[str] = set()
-        ordered_to_cull: list[str] = []
-        for sha in to_cull:
-            if sha not in seen:
-                seen.add(sha)
-                ordered_to_cull.append(sha)
-
-        return True, None, {
-            'requested': len(sha1_list),
-            'clusters_found': len(clusters),
-            'to_cull': ordered_to_cull,
-            'kept': len(sha1_list) - len(ordered_to_cull),
-            'clusters': cluster_summaries,
-        }
-
     def perform_cull(sha1_list: list[str], progress_callback: Any | None = None) -> tuple[bool, str | None, dict[str, Any]]:
         if not sha1_list:
             return False, "sha1_list required", {}
 
-        if progress_callback:
-            progress_callback(0, 0, "Analyzing clusters…")
-
-        ok, message, plan = build_cull_plan(sha1_list)
-        if not ok:
-            return False, message, {}
-
-        losers = list(plan.get('to_cull') or [])
-        clusters = list(plan.get('clusters') or [])
+        store.load_cache()
         all_items = store.db_cache + store.undated_cache
         item_map = {str(item.get('sha1')): item for item in all_items}
         items = [item_map[str(sha1)] for sha1 in sha1_list if str(sha1) in item_map]
@@ -4947,17 +4550,6 @@ def create_app(config: ArchiveConfig) -> Flask:
         return jsonify({"status": "ok"})
 
 
-    @app.route("/api/cull_select", methods=["POST"])
-    def cull_select():
-        payload = request.json or {}
-        sha1_list = payload.get("sha1_list") or []
-        if not isinstance(sha1_list, list) or not sha1_list:
-            return jsonify({"status": "error", "message": "sha1_list required"}), 400
-        ok, message, summary = build_cull_plan([str(x) for x in sha1_list])
-        if not ok:
-            return jsonify({"status": "error", "message": message}), 400
-        return jsonify({"status": "ok", **summary})
-
     @app.route("/api/cull", methods=["POST"])
     def cull_now():
         payload = request.json or {}
@@ -5047,118 +4639,121 @@ def create_app(config: ArchiveConfig) -> Flask:
     @app.route("/")
     @app.route("/timeline")
     def timeline():
-        route_started = time.perf_counter()
         store.load_cache()
-        decades = sorted({item["_decade"] for item in store.db_cache}, reverse=True)
-        cards: list[dict[str, Any]] = []
 
-        for decade in decades:
-            items = [item for item in store.db_cache if item["_decade"] == decade]
-            cards.append(
-                {
-                    "id": f"d_{decade}",
-                    "title": decade,
-                    "subtitle": f"{len(items)} items",
-                    "url": f"/timeline/decade/{decade}",
-                    "places_url": f"/places/timeline/decade/{decade}",
-                    "heroes": items,
-                    "tags": store.get_top_tags(items),
-                }
+        def build_timeline_index() -> str:
+            decades = sorted({item["_decade"] for item in store.db_cache}, reverse=True)
+            cards: list[dict[str, Any]] = []
+
+            for decade in decades:
+                items = [item for item in store.db_cache if item["_decade"] == decade]
+                cards.append(
+                    {
+                        "id": f"d_{decade}",
+                        "title": decade,
+                        "subtitle": f"{len(items)} items",
+                        "url": f"/timeline/decade/{decade}",
+                        "places_url": f"/places/timeline/decade/{decade}",
+                        "heroes": items,
+                        "tags": store.get_top_tags(items),
+                    }
+                )
+
+            for card in cards:
+                card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
+
+            manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
+            return render_page(
+                page_title="Timeline",
+                active_tab="timeline",
+                banner_img="hero-timeline.png",
+                breadcrumb="Decades",
+                cards=cards,
+                manifests=manifests,
+                card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        for card in cards:
-            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
-
-        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        response = render_page(
-            page_title="Timeline",
-            active_tab="timeline",
-            banner_img="hero-timeline.png",
-            breadcrumb="Decades",
-            cards=cards,
-            manifests=manifests,
-            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
-        )
-        log_slow_route("timeline:index", route_started, cards=len(cards), decades=len(decades))
-        return response
+        return get_cached_page("timeline-index", "all", build_timeline_index)
 
     @app.route("/timeline/decade/<decade>")
     def timeline_decade(decade: str):
-        route_started = time.perf_counter()
         store.load_cache()
-        years = sorted({item["_year"] for item in store.db_cache if item["_decade"] == decade}, reverse=True)
-        cards: list[dict[str, Any]] = []
 
-        for year in years:
-            items = [item for item in store.db_cache if item["_year"] == year]
-            cards.append(
-                {
-                    "id": f"y_{year}",
-                    "title": year,
-                    "subtitle": f"{len(items)} items",
-                    "url": f"/timeline/year/{year}",
-                    "places_url": f"/places/timeline/year/{year}",
-                    "heroes": items,
-                    "tags": store.get_top_tags(items),
-                }
+        def build_timeline_decade() -> str:
+            years = sorted({item["_year"] for item in store.db_cache if item["_decade"] == decade}, reverse=True)
+            cards: list[dict[str, Any]] = []
+
+            for year in years:
+                items = [item for item in store.db_cache if item["_year"] == year]
+                cards.append(
+                    {
+                        "id": f"y_{year}",
+                        "title": year,
+                        "subtitle": f"{len(items)} items",
+                        "url": f"/timeline/year/{year}",
+                        "places_url": f"/places/timeline/year/{year}",
+                        "heroes": items,
+                        "tags": store.get_top_tags(items),
+                    }
+                )
+
+            for card in cards:
+                card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
+
+            manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
+            return render_page(
+                page_title=f"The {decade}",
+                active_tab="timeline",
+                banner_img="hero-timeline.png",
+                breadcrumb=f"<a href='/timeline'>Timeline</a> / {decade}",
+                action_links=[make_places_action(f'/places/timeline/decade/{decade}')],
+                cards=cards,
+                manifests=manifests,
+                card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        for card in cards:
-            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
-
-        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        response = render_page(
-            page_title=f"The {decade}",
-            active_tab="timeline",
-            banner_img="hero-timeline.png",
-            breadcrumb=f"<a href='/timeline'>Timeline</a> / {decade}",
-            action_links=[make_places_action(f'/places/timeline/decade/{decade}')],
-            cards=cards,
-            manifests=manifests,
-            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
-        )
-        log_slow_route("timeline:decade", route_started, decade=decade, cards=len(cards))
-        return response
+        return get_cached_page("timeline-decade", decade, build_timeline_decade)
 
     @app.route("/timeline/year/<year>")
     def timeline_year(year: str):
-        route_started = time.perf_counter()
         store.load_cache()
-        month_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in [i for i in store.db_cache if i["_year"] == year]:
-            month_map[item["_month"]].append(item)
 
-        cards: list[dict[str, Any]] = []
-        for month_code in sorted(month_map.keys()):
-            imgs = month_map[month_code]
-            month_name = imgs[0]["_month_name"]
-            cards.append(
-                {
-                    "id": f"m_{year}_{month_code}",
-                    "title": month_name,
-                    "subtitle": f"{len(imgs)} items",
-                    "url": f"/timeline/month/{year}/{month_code}",
-                    "places_url": f"/places/timeline/month/{year}/{month_code}",
-                    "heroes": imgs,
-                    "tags": store.get_top_tags(imgs),
-                }
+        def build_timeline_year() -> str:
+            month_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for item in [i for i in store.db_cache if i["_year"] == year]:
+                month_map[item["_month"]].append(item)
+
+            cards: list[dict[str, Any]] = []
+            for month_code in sorted(month_map.keys()):
+                imgs = month_map[month_code]
+                month_name = imgs[0]["_month_name"]
+                cards.append(
+                    {
+                        "id": f"m_{year}_{month_code}",
+                        "title": month_name,
+                        "subtitle": f"{len(imgs)} items",
+                        "url": f"/timeline/month/{year}/{month_code}",
+                        "places_url": f"/places/timeline/month/{year}/{month_code}",
+                        "heroes": imgs,
+                        "tags": store.get_top_tags(imgs),
+                    }
+                )
+
+            for card in cards:
+                card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
+
+            manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
+            return render_page(
+                page_title=year,
+                active_tab="timeline",
+                banner_img="hero-timeline.png",
+                breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}",
+                cards=cards,
+                manifests=manifests,
+                card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
-        for card in cards:
-            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
-
-        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        response = render_page(
-            page_title=year,
-            active_tab="timeline",
-            banner_img="hero-timeline.png",
-            breadcrumb=f"<a href='/timeline'>Timeline</a> / <a href='/timeline/decade/{year[:3]}0s'>{year[:3]}0s</a> / {year}",
-            cards=cards,
-            manifests=manifests,
-            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
-        )
-        log_slow_route("timeline:year", route_started, year=year, cards=len(cards))
-        return response
+        return get_cached_page("timeline-year", year, build_timeline_year)
 
     @app.route("/timeline/month/<year>/<month>")
     def timeline_month(year: str, month: str):
@@ -5211,7 +4806,6 @@ def create_app(config: ArchiveConfig) -> Flask:
 
     @app.route("/undated")
     def undated():
-        route_started = time.perf_counter()
         store.load_cache()
         folder_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in store.undated_cache:
@@ -5234,7 +4828,7 @@ def create_app(config: ArchiveConfig) -> Flask:
             card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
         manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        response = render_page(
+        return render_page(
             page_title="Undated Archive",
             active_tab="undated",
             banner_img="hero-undated.png",
@@ -5244,8 +4838,6 @@ def create_app(config: ArchiveConfig) -> Flask:
             manifests=manifests,
             card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
         )
-        log_slow_route("undated:index", route_started, cards=len(cards))
-        return response
 
     @app.route("/undated/<folder>")
     def undated_folder(folder: str):
@@ -5264,82 +4856,40 @@ def create_app(config: ArchiveConfig) -> Flask:
     @app.route("/folder")
     @app.route("/folder/<path:subpath>")
     def explorer(subpath: str = ""):
-        route_started = time.perf_counter()
-        store.load_cache()
-        all_media = store.db_cache + store.undated_cache
-        prefix = f"{subpath}/" if subpath else ""
-        unique_subfolders: set[str] = set()
-        direct_files: list[dict[str, Any]] = []
-
-        for item in all_media:
-            web_path = item["_web_path"]
-            if not web_path.startswith(prefix):
-                continue
-            remainder = web_path[len(prefix):]
-            if "/" in remainder:
-                unique_subfolders.add(remainder.split("/")[0])
-            else:
-                direct_files.append(item)
-
-        cards = []
-        for folder_name in sorted(unique_subfolders):
-            items = [
-                item
-                for item in all_media
-                if item["_web_path"].startswith(prefix + folder_name + "/")
-            ]
-            cards.append(
-                {
-                    "id": f"f_{folder_name}",
-                    "title": folder_name,
-                    "subtitle": f"{len(items)} items",
-                    "url": f"/folder/{prefix + folder_name}",
-                    "places_url": f"/places/folder/{prefix + folder_name}",
-                    "heroes": items,
-                    "tags": store.get_top_tags(items),
-                }
-            )
-
-        for card in cards:
-            card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
-
-        manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-        manifests["main_gallery"] = store.build_manifest(direct_files)
-
-        crumb = "Root" if not subpath else f"<a href='/folder'>Root</a> / {subpath.replace('/', ' / ')}"
-        response = render_page(
-            page_title="Explorer",
-            active_tab="file",
-            banner_img="hero-files.png",
-            breadcrumb=crumb,
-            action_links=[make_places_action(f'/places/folder/{subpath}' if subpath else '/places/folder')],
-            cards=cards,
-            photos=direct_files,
-            manifests=manifests,
-            card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
-        )
-        log_slow_route("explorer", route_started, subpath=subpath or "/", cards=len(cards), direct_files=len(direct_files))
-        return response
-
-    @app.route("/tags")
-    @app.route("/tags/<tag>")
-    def tags(tag: str | None = None):
-        route_started = time.perf_counter()
         store.load_cache()
 
-        if tag is None:
+        def build_explorer_page() -> str:
+            all_media = store.db_cache + store.undated_cache
+            prefix = f"{subpath}/" if subpath else ""
+            unique_subfolders: set[str] = set()
+            direct_files: list[dict[str, Any]] = []
+
+            for item in all_media:
+                web_path = item["_web_path"]
+                if not web_path.startswith(prefix):
+                    continue
+                remainder = web_path[len(prefix):]
+                if "/" in remainder:
+                    unique_subfolders.add(remainder.split("/")[0])
+                else:
+                    direct_files.append(item)
+
             cards = []
-            for tag_name in sorted(store.global_tags.keys()):
-                imgs = store.global_tags[tag_name]
+            for folder_name in sorted(unique_subfolders):
+                items = [
+                    item
+                    for item in all_media
+                    if item["_web_path"].startswith(prefix + folder_name + "/")
+                ]
                 cards.append(
                     {
-                        "id": f"t_{tag_name}",
-                        "title": f"#{tag_name}",
-                        "subtitle": f"{len(imgs)} items",
-                        "url": f"/tags/{tag_name}",
-                        "places_url": f"/places/tags/{tag_name}",
-                        "heroes": imgs,
-                        "tags": [],
+                        "id": f"f_{folder_name}",
+                        "title": folder_name,
+                        "subtitle": f"{len(items)} items",
+                        "url": f"/folder/{prefix + folder_name}",
+                        "places_url": f"/places/folder/{prefix + folder_name}",
+                        "heroes": items,
+                        "tags": store.get_top_tags(items),
                     }
                 )
 
@@ -5347,30 +4897,74 @@ def create_app(config: ArchiveConfig) -> Flask:
                 card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
             manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
-            response = render_page(
-                page_title="Tags",
-                active_tab="tags",
-                banner_img="hero-tags.png",
-                breadcrumb="All Tags",
+            manifests["main_gallery"] = store.build_manifest(direct_files)
+
+            crumb = "Root" if not subpath else f"<a href='/folder'>Root</a> / {subpath.replace('/', ' / ')}"
+            return render_page(
+                page_title="Explorer",
+                active_tab="file",
+                banner_img="hero-files.png",
+                breadcrumb=crumb,
+                action_links=[make_places_action(f'/places/folder/{subpath}' if subpath else '/places/folder')],
                 cards=cards,
+                photos=direct_files,
                 manifests=manifests,
                 card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
-            log_slow_route("tags:index", route_started, tags=len(cards))
-            return response
 
-        imgs = store.global_tags.get(tag, [])
-        response = render_page(
-            page_title=f"#{tag}",
-            active_tab="tags",
-            banner_img="hero-tags.png",
-            breadcrumb=f"<a href='/tags'>Tags</a> / {tag}",
-            action_links=[make_places_action(f'/places/tags/{tag}')],
-            photos=imgs,
-            manifests={"main_gallery": store.build_manifest(imgs)},
-        )
-        log_slow_route("tags:detail", route_started, tag=tag, photos=len(imgs))
-        return response
+        return get_cached_page("explorer", subpath or "/", build_explorer_page)
+
+    @app.route("/tags")
+    @app.route("/tags/<tag>")
+    def tags(tag: str | None = None):
+        store.load_cache()
+
+        if tag is None:
+            def build_tags_index() -> str:
+                cards = []
+                for tag_name in sorted(store.global_tags.keys()):
+                    imgs = store.global_tags[tag_name]
+                    cards.append(
+                        {
+                            "id": f"t_{tag_name}",
+                            "title": f"#{tag_name}",
+                            "subtitle": f"{len(imgs)} items",
+                            "url": f"/tags/{tag_name}",
+                            "places_url": f"/places/tags/{tag_name}",
+                            "heroes": imgs,
+                            "tags": [],
+                        }
+                    )
+
+                for card in cards:
+                    card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
+
+                manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
+                return render_page(
+                    page_title="Tags",
+                    active_tab="tags",
+                    banner_img="hero-tags.png",
+                    breadcrumb="All Tags",
+                    cards=cards,
+                    manifests=manifests,
+                    card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
+                )
+
+            return get_cached_page("tags-index", "all", build_tags_index)
+
+        def build_tag_detail() -> str:
+            imgs = store.global_tags.get(tag, [])
+            return render_page(
+                page_title=f"#{tag}",
+                active_tab="tags",
+                banner_img="hero-tags.png",
+                breadcrumb=f"<a href='/tags'>Tags</a> / {tag}",
+                action_links=[make_places_action(f'/places/tags/{tag}')],
+                photos=imgs,
+                manifests={"main_gallery": store.build_manifest(imgs)},
+            )
+
+        return get_cached_page("tags-detail", str(tag or ""), build_tag_detail)
 
     @app.route("/places")
     def places_root():
