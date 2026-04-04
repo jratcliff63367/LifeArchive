@@ -472,11 +472,9 @@ HTML_TEMPLATE = r"""
             border: 1px solid #444;
             z-index: 100000;
             min-width: 250px;
-            max-height: calc(100vh - 16px);
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             padding: 6px 0;
-            overflow: visible;
         }
         .menu-item {
             position: relative;
@@ -504,9 +502,6 @@ HTML_TEMPLATE = r"""
             top: 0;
             left: 100%;
             min-width: 220px;
-            max-height: calc(100vh - 16px);
-            overflow-y: auto;
-            overflow-x: hidden;
             background: #222;
             border: 1px solid #444;
             border-radius: 8px;
@@ -1448,7 +1443,7 @@ HTML_TEMPLATE = r"""
         {% if cards %}
         <div class="grid" style="margin-bottom: 50px;">
             {% for c in cards %}
-            <div class="card" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
+            <div class="card" data-card-id="{{ c.id }}" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
                 <div class="hero-preview">
                     {% if c.comp_hash %}
                     <img src="/composite/{{ c.comp_hash }}.jpg" loading="lazy">
@@ -1618,6 +1613,7 @@ HTML_TEMPLATE = r"""
         let showFaceOverlay = false;
         let activeJobId = null;
         let activeJobPollTimer = null;
+        let pendingPostSuccessAction = null;
         let focusedPhotoSha1 = null;
 
         function getVisiblePhotoCards() {
@@ -1748,64 +1744,6 @@ HTML_TEMPLATE = r"""
             if (menu) menu.classList.remove('open');
         }
 
-        function clampContextMenuToViewport(menu, clientX, clientY) {
-            if (!menu) return;
-            const margin = 8;
-            menu.style.left = `${clientX}px`;
-            menu.style.top = `${clientY}px`;
-
-            const rect = menu.getBoundingClientRect();
-            let left = clientX;
-            let top = clientY;
-
-            if (rect.right > window.innerWidth - margin) {
-                left = Math.max(margin, window.innerWidth - rect.width - margin);
-            }
-            if (rect.bottom > window.innerHeight - margin) {
-                top = Math.max(margin, window.innerHeight - rect.height - margin);
-            }
-
-            menu.style.left = `${left}px`;
-            menu.style.top = `${top}px`;
-        }
-
-        function adjustContextSubmenus() {
-            const menu = document.getElementById('context-menu');
-            if (!menu) return;
-            const margin = 8;
-            menu.querySelectorAll('.submenu').forEach(submenu => {
-                submenu.style.top = '0px';
-                submenu.style.left = '100%';
-                submenu.style.right = 'auto';
-
-                const parent = submenu.parentElement;
-                if (!parent) return;
-                const parentRect = parent.getBoundingClientRect();
-
-                submenu.style.display = 'block';
-                submenu.style.visibility = 'hidden';
-
-                const rect = submenu.getBoundingClientRect();
-
-                let top = 0;
-                if (rect.bottom > window.innerHeight - margin) {
-                    top = Math.min(0, (window.innerHeight - margin) - rect.bottom);
-                }
-                if (parentRect.top + top < margin) {
-                    top = margin - parentRect.top;
-                }
-
-                if (rect.right > window.innerWidth - margin) {
-                    submenu.style.left = 'auto';
-                    submenu.style.right = '100%';
-                }
-
-                submenu.style.top = `${top}px`;
-                submenu.style.visibility = '';
-                submenu.style.display = '';
-            });
-        }
-
         function getStashCategoryDir(categoryKey) {
             const item = stashCategories.find(entry => entry.key === categoryKey);
             return item ? item.dir : '_stash';
@@ -1818,10 +1756,26 @@ HTML_TEMPLATE = r"""
             return null;
         }
 
+        function buildFastTagsPostAction() {
+            if (window.location.pathname === '/tags' && menuContext.kind === 'hero' && menuContext.cardId) {
+                return { type: 'remove-tag-card', cardId: String(menuContext.cardId) };
+            }
+            return null;
+        }
+
+        function applyFastPostSuccessAction(action) {
+            if (!action || action.type !== 'remove-tag-card' || !action.cardId) return false;
+            const selector = '.card[data-card-id="' + String(action.cardId).replace(/"/g, '\\"') + '"]';
+            const card = document.querySelector(selector);
+            if (!card) return false;
+            card.remove();
+            return true;
+        }
+
         function configureContextMenuFor(kind) {
             const menu = document.getElementById('context-menu');
             if (!menu) return;
-            const photoOnly = ['rotate-cw', 'rotate-ccw', 'debug'];
+            const photoOnly = ['cull-select', 'cull-move', 'rotate-cw', 'rotate-ccw', 'debug'];
             photoOnly.forEach(role => {
                 const el = menu.querySelector(`[data-role="${role}"]`);
                 if (!el) return;
@@ -1877,12 +1831,20 @@ HTML_TEMPLATE = r"""
                 if (data.status === 'completed') {
                     activeJobId = null;
                     activeJobPollTimer = null;
-                    setTimeout(() => location.reload(), 700);
+                    const action = pendingPostSuccessAction;
+                    pendingPostSuccessAction = null;
+                    const applied = applyFastPostSuccessAction(action);
+                    if (applied) {
+                        closeProgressDialog();
+                    } else {
+                        setTimeout(() => location.reload(), 700);
+                    }
                     return;
                 }
                 if (data.status === 'error') {
                     activeJobId = null;
                     activeJobPollTimer = null;
+                    pendingPostSuccessAction = null;
                     return;
                 }
                 activeJobPollTimer = setTimeout(() => pollJob(jobId), 400);
@@ -1898,6 +1860,7 @@ HTML_TEMPLATE = r"""
                 });
                 activeJobId = null;
                 activeJobPollTimer = null;
+                pendingPostSuccessAction = null;
             }
         }
 
@@ -1905,6 +1868,7 @@ HTML_TEMPLATE = r"""
             hideContextMenu();
             hideSelectionStashMenu();
             if (!payload || !payload.sha1_list || payload.sha1_list.length === 0) return;
+            pendingPostSuccessAction = buildFastTagsPostAction();
             updateProgressDialog({
                 title: payload.title || 'Working…',
                 subtitle: payload.subtitle || '',
@@ -2533,8 +2497,8 @@ HTML_TEMPLATE = r"""
             configureContextMenuFor(kind);
             const menu = document.getElementById('context-menu');
             menu.style.display = 'block';
-            clampContextMenuToViewport(menu, e.clientX, e.clientY);
-            adjustContextSubmenus();
+            menu.style.left = e.clientX + 'px';
+            menu.style.top = e.clientY + 'px';
         }
 
         function handleCtx(e, sha1) {
@@ -2555,7 +2519,6 @@ HTML_TEMPLATE = r"""
         }
 
         function rotateImage(degrees) {
-            hideContextMenu();
             const targets = getContextTargets(menuSha1);
             if (targets.length > 1) {
                 fetch('/api/rotate_batch', {
@@ -2747,38 +2710,24 @@ HTML_TEMPLATE = r"""
             }
         };
 
-        document.addEventListener('keydown', (e) => {
-            const activeEl = document.activeElement;
-            const targetTag = (activeEl && activeEl.tagName ? activeEl.tagName.toLowerCase() : '');
-            const activeIsCheckbox = !!(activeEl && activeEl.classList && activeEl.classList.contains('photo-select-checkbox'));
-            const isTextInput = targetTag === 'textarea' || (targetTag === 'input' && !activeIsCheckbox);
-
+        document.onkeydown = (e) => {
+            const targetTag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
+            const isTextInput = targetTag === 'input' || targetTag === 'textarea';
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 e.preventDefault();
                 selectAllVisible();
                 return;
             }
-
             if (e.key === 'Escape') {
                 if (selectedSha1s.size > 0) {
                     clearSelection();
                     return;
                 }
                 closeLB();
-                return;
             }
-
             if (document.getElementById('lightbox').classList.contains('active')) {
-                if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    changeImg(1);
-                    return;
-                }
-                if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    changeImg(-1);
-                    return;
-                }
+                if (e.key === 'ArrowRight') changeImg(1);
+                if (e.key === 'ArrowLeft') changeImg(-1);
             } else if (!isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 if (e.key === 'ArrowRight') {
                     e.preventDefault();
@@ -2806,9 +2755,8 @@ HTML_TEMPLATE = r"""
                     return;
                 }
             }
-
             if (e.key.toLowerCase() === 'e') toggleSidebar();
-        });
+        };
 
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
@@ -5197,9 +5145,9 @@ def create_app(config: ArchiveConfig) -> Flask:
                 )
 
             for card in cards:
-                card["comp_hash"] = store.get_composite_hash(card["id"], card["heroes"])
+                card["comp_hash"], card["selected_heroes"] = store.get_composite_payload(card["id"], card["heroes"], max_images=16)
 
-            manifests = {card["id"]: store.build_manifest(card["heroes"]) for card in cards}
+            manifests = {card["id"]: store.build_manifest(card.get("selected_heroes") or card["heroes"]) for card in cards}
             return render_page(
                 page_title="Tags",
                 active_tab="tags",
@@ -5207,6 +5155,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                 breadcrumb="All Tags",
                 cards=cards,
                 manifests=manifests,
+                card_scopes={card['id']: [str(item['sha1']) for item in card['heroes']] for card in cards},
             )
 
         imgs = store.global_tags.get(tag, [])
