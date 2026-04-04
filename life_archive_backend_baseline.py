@@ -94,15 +94,7 @@ STASH_CATEGORIES = [
     {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
     {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
     {"key": "personal-artwork", "label": "Personal Artwork", "dir": "_stash/personal-artwork"},
-    {"key": "museum", "label": "museum", "dir": "_stash/museum"},
     {"key": "Movies16mm", "label": "Moviews16mm", "dir": "_stash/movies-16mm"},
-    {"key": "CarShow", "label": "CarShow", "dir": "_stash/carshow"},
-    {"key": "449-Oxford-Lane", "label": "449-Oxford-Lane", "dir": "_stash/449-Oxford-Lane"},
-    {"key": "445-Oxford-Lane", "label": "445-Oxford-Lane", "dir": "_stash/445-Oxford-Lane"},
-    {"key": "Terrys", "label": "Terrys", "dir": "_stash/terrys"},
-    {"key": "models", "label": "Models", "dir": "_stash/models"},
-    {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
-    {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -193,6 +185,10 @@ HTML_TEMPLATE = r"""
         .photo-card.selected {
             border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(187, 134, 252, 0.35);
+        }
+        .photo-card.keyboard-focus {
+            border-color: #ffffff;
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55), 0 0 0 5px rgba(187, 134, 252, 0.28);
         }
         .photo-select-wrap {
             position: absolute;
@@ -470,9 +466,11 @@ HTML_TEMPLATE = r"""
             border: 1px solid #444;
             z-index: 100000;
             min-width: 250px;
+            max-height: calc(100vh - 16px);
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             padding: 6px 0;
+            overflow: visible;
         }
         .menu-item {
             position: relative;
@@ -490,20 +488,22 @@ HTML_TEMPLATE = r"""
         .menu-item.hidden {
             display: none;
         }
-        .menu-arrow {
-            float: right;
-            opacity: 0.8;
-        }
-        .submenu {
+        .menu-arr.submenu {
             display: none;
             position: absolute;
             top: 0;
             left: 100%;
             min-width: 220px;
+            max-height: calc(100vh - 16px);
+            overflow-y: auto;
+            overflow-x: hidden;
             background: #222;
             border: 1px solid #444;
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            padding: 6px 0;
+            color: #e5e7eb;
+        } 0, 0.5);
             padding: 6px 0;
             color: #e5e7eb;
         }
@@ -1610,6 +1610,125 @@ HTML_TEMPLATE = r"""
         let activeJobId = null;
         let activeJobPollTimer = null;
         let pendingPostSuccessAction = null;
+        let focusedPhotoSha1 = null;
+
+        function getVisiblePhotoCards() {
+            return Array.from(document.querySelectorAll('.photo-card[data-sha]'));
+        }
+
+        function getPhotoCardBySha1(sha1) {
+            if (!sha1) return null;
+            return document.querySelector(`.photo-card[data-sha="${sha1}"]`);
+        }
+
+        function refreshKeyboardFocusUI() {
+            const cards = getVisiblePhotoCards();
+            let hasFocusedCard = false;
+            cards.forEach(card => {
+                const isFocused = focusedPhotoSha1 && card.dataset.sha === focusedPhotoSha1;
+                card.classList.toggle('keyboard-focus', !!isFocused);
+                if (isFocused) hasFocusedCard = true;
+            });
+            if (!hasFocusedCard) {
+                focusedPhotoSha1 = null;
+            }
+        }
+
+        function setFocusedPhoto(sha1, shouldScroll = true) {
+            const card = getPhotoCardBySha1(sha1);
+            if (!card) return;
+            focusedPhotoSha1 = sha1;
+            refreshKeyboardFocusUI();
+            if (shouldScroll) {
+                card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+        }
+
+        function ensureFocusedPhoto() {
+            const cards = getVisiblePhotoCards();
+            if (cards.length === 0) return null;
+            const existing = focusedPhotoSha1 ? getPhotoCardBySha1(focusedPhotoSha1) : null;
+            if (existing) return existing;
+            focusedPhotoSha1 = cards[0].dataset.sha;
+            refreshKeyboardFocusUI();
+            return cards[0];
+        }
+
+        function groupPhotoCardsIntoRows() {
+            const cards = getVisiblePhotoCards();
+            const rows = [];
+            const tolerance = 24;
+            cards.forEach(card => {
+                const rect = card.getBoundingClientRect();
+                const top = rect.top;
+                let row = rows.find(r => Math.abs(r.top - top) <= tolerance);
+                if (!row) {
+                    row = { top, cards: [] };
+                    rows.push(row);
+                }
+                row.cards.push({
+                    card,
+                    left: rect.left,
+                    centerX: rect.left + (rect.width / 2),
+                });
+            });
+            rows.sort((a, b) => a.top - b.top);
+            rows.forEach(row => row.cards.sort((a, b) => a.left - b.left));
+            return rows;
+        }
+
+        function moveKeyboardFocus(direction) {
+            const current = ensureFocusedPhoto();
+            if (!current) return;
+            const rows = groupPhotoCardsIntoRows();
+            if (!rows.length) return;
+
+            let rowIndex = -1;
+            let colIndex = -1;
+            for (let i = 0; i < rows.length; i++) {
+                const j = rows[i].cards.findIndex(entry => entry.card.dataset.sha === current.dataset.sha);
+                if (j >= 0) {
+                    rowIndex = i;
+                    colIndex = j;
+                    break;
+                }
+            }
+            if (rowIndex < 0 || colIndex < 0) return;
+
+            let target = null;
+            if (direction === 'left') {
+                target = rows[rowIndex].cards[Math.max(0, colIndex - 1)]?.card || null;
+            } else if (direction === 'right') {
+                target = rows[rowIndex].cards[Math.min(rows[rowIndex].cards.length - 1, colIndex + 1)]?.card || null;
+            } else {
+                const currentCenter = rows[rowIndex].cards[colIndex].centerX;
+                const targetRowIndex = direction === 'up' ? rowIndex - 1 : rowIndex + 1;
+                if (targetRowIndex >= 0 && targetRowIndex < rows.length) {
+                    const targetRow = rows[targetRowIndex].cards;
+                    let bestIdx = 0;
+                    let bestDist = Infinity;
+                    for (let i = 0; i < targetRow.length; i++) {
+                        const dist = Math.abs(targetRow[i].centerX - currentCenter);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIdx = i;
+                        }
+                    }
+                    target = targetRow[bestIdx]?.card || null;
+                }
+            }
+
+            if (target) {
+                setFocusedPhoto(target.dataset.sha, true);
+            }
+        }
+
+        function toggleFocusedPhotoSelection() {
+            const current = ensureFocusedPhoto();
+            if (!current) return;
+            toggleSelection(current.dataset.sha);
+            setFocusedPhoto(current.dataset.sha, false);
+        }
 
         function hideContextMenu() {
             const menu = document.getElementById('context-menu');
@@ -1619,6 +1738,64 @@ HTML_TEMPLATE = r"""
         function hideSelectionStashMenu() {
             const menu = document.getElementById('selection-stash-menu');
             if (menu) menu.classList.remove('open');
+        }
+
+        function clampContextMenuToViewport(menu, clientX, clientY) {
+            if (!menu) return;
+            const margin = 8;
+            menu.style.left = `${clientX}px`;
+            menu.style.top = `${clientY}px`;
+
+            const rect = menu.getBoundingClientRect();
+            let left = clientX;
+            let top = clientY;
+
+            if (rect.right > window.innerWidth - margin) {
+                left = Math.max(margin, window.innerWidth - rect.width - margin);
+            }
+            if (rect.bottom > window.innerHeight - margin) {
+                top = Math.max(margin, window.innerHeight - rect.height - margin);
+            }
+
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+        }
+
+        function adjustContextSubmenus() {
+            const menu = document.getElementById('context-menu');
+            if (!menu) return;
+            const margin = 8;
+            menu.querySelectorAll('.submenu').forEach(submenu => {
+                submenu.style.top = '0px';
+                submenu.style.left = '100%';
+                submenu.style.right = 'auto';
+
+                const parent = submenu.parentElement;
+                if (!parent) return;
+                const parentRect = parent.getBoundingClientRect();
+
+                submenu.style.display = 'block';
+                submenu.style.visibility = 'hidden';
+
+                const rect = submenu.getBoundingClientRect();
+
+                let top = 0;
+                if (rect.bottom > window.innerHeight - margin) {
+                    top = Math.min(0, (window.innerHeight - margin) - rect.bottom);
+                }
+                if (parentRect.top + top < margin) {
+                    top = margin - parentRect.top;
+                }
+
+                if (rect.right > window.innerWidth - margin) {
+                    submenu.style.left = 'auto';
+                    submenu.style.right = '100%';
+                }
+
+                submenu.style.top = `${top}px`;
+                submenu.style.visibility = '';
+                submenu.style.display = '';
+            });
         }
 
         function getStashCategoryDir(categoryKey) {
@@ -2372,8 +2549,8 @@ HTML_TEMPLATE = r"""
             configureContextMenuFor(kind);
             const menu = document.getElementById('context-menu');
             menu.style.display = 'block';
-            menu.style.left = e.clientX + 'px';
-            menu.style.top = e.clientY + 'px';
+            clampContextMenuToViewport(menu, e.clientX, e.clientY);
+            adjustContextSubmenus();
         }
 
         function handleCtx(e, sha1) {
@@ -2394,6 +2571,7 @@ HTML_TEMPLATE = r"""
         }
 
         function rotateImage(degrees) {
+            hideContextMenu();
             const targets = getContextTargets(menuSha1);
             if (targets.length > 1) {
                 fetch('/api/rotate_batch', {
@@ -2543,40 +2721,97 @@ HTML_TEMPLATE = r"""
             }
         };
 
-        document.onkeydown = (e) => {
-            const targetTag = (e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '');
-            const isTextInput = targetTag === 'input' || targetTag === 'textarea';
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted) {
+                window.location.reload();
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            const activeEl = document.activeElement;
+            const targetTag = (activeEl && activeEl.tagName ? activeEl.tagName.toLowerCase() : '');
+            const activeIsCheckbox = !!(activeEl && activeEl.classList && activeEl.classList.contains('photo-select-checkbox'));
+            const isTextInput = targetTag === 'textarea' || (targetTag === 'input' && !activeIsCheckbox);
+
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
                 e.preventDefault();
                 selectAllVisible();
                 return;
             }
+
             if (e.key === 'Escape') {
                 if (selectedSha1s.size > 0) {
                     clearSelection();
                     return;
                 }
                 closeLB();
+                return;
             }
+
             if (document.getElementById('lightbox').classList.contains('active')) {
-                if (e.key === 'ArrowRight') changeImg(1);
-                if (e.key === 'ArrowLeft') changeImg(-1);
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    changeImg(1);
+                    return;
+                }
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    changeImg(-1);
+                    return;
+                }
+            } else if (!isTextInput && document.querySelectorAll('.photo-card[data-sha]').length > 0) {
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    moveKeyboardFocus('right');
+                    return;
+                }
+                if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    moveKeyboardFocus('left');
+                    return;
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    moveKeyboardFocus('up');
+                    return;
+                }
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    moveKeyboardFocus('down');
+                    return;
+                }
+                if (e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    toggleFocusedPhotoSelection();
+                    return;
+                }
             }
+
             if (e.key.toLowerCase() === 'e') toggleSidebar();
-        };
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    setFocusedPhoto(cb.dataset.sha, false);
                     toggleSelection(cb.dataset.sha);
                 });
+            });
+
+            document.querySelectorAll('.photo-card[data-sha]').forEach(card => {
+                card.addEventListener('click', () => setFocusedPhoto(card.dataset.sha, false));
+                card.addEventListener('mousedown', () => setFocusedPhoto(card.dataset.sha, false));
             });
 
             document.querySelectorAll('.nav-bar a, .tag-pill, .breadcrumb a, .grid a').forEach(link => {
                 link.addEventListener('click', () => clearSelection());
             });
 
+            const firstCard = getVisiblePhotoCards()[0];
+            if (firstCard) {
+                focusedPhotoSha1 = firstCard.dataset.sha;
+            }
             refreshSelectionUI();
         });
     </script>
