@@ -4528,6 +4528,17 @@ def create_app(config: ArchiveConfig) -> Flask:
                 conn.execute("DELETE FROM composite_cache")
                 conn.commit()
 
+    def mark_views_dirty_only() -> None:
+        # IMPORTANT:
+        # Do not delete composite JPEGs during ordinary move/trash/stash/cull flows.
+        # Already-rendered pages may still reference those composite hashes, and
+        # removing them causes unrelated hero cards to "disappear" until refresh.
+        #
+        # The next page render will still compute fresh cards because the store is
+        # marked dirty, but existing pages keep working because old composite files
+        # remain available.
+        store.mark_cache_dirty()
+
     def safe_destination_relative(base_dir_name: str, rel_fqn: str, sha1: str) -> Path:
         rel_path = Path(str(rel_fqn).replace("\\", "/"))
         target_rel = Path(base_dir_name) / rel_path
@@ -4595,8 +4606,7 @@ def create_app(config: ArchiveConfig) -> Flask:
 
             conn.commit()
 
-        invalidate_composites()
-        store.mark_cache_dirty()
+        mark_views_dirty_only()
         return True, None, {
             'requested': total,
             'moved': moved_count,
@@ -4690,8 +4700,7 @@ def create_app(config: ArchiveConfig) -> Flask:
                 except OSError:
                     pass
 
-        invalidate_composites()
-        store.mark_cache_dirty()
+        mark_views_dirty_only()
         return True, None
 
     def rotate_media_by_sha(sha1: str, degrees: int) -> tuple[bool, str | None]:
