@@ -94,7 +94,15 @@ STASH_CATEGORIES = [
     {"key": "documents", "label": "Documents", "dir": "_stash/documents"},
     {"key": "zentangle", "label": "Zentangle", "dir": "_stash/zentangle"},
     {"key": "personal-artwork", "label": "Personal Artwork", "dir": "_stash/personal-artwork"},
+    {"key": "museum", "label": "museum", "dir": "_stash/museum"},
     {"key": "Movies16mm", "label": "Moviews16mm", "dir": "_stash/movies-16mm"},
+    {"key": "CarShow", "label": "CarShow", "dir": "_stash/carshow"},
+    {"key": "449-Oxford-Lane", "label": "449-Oxford-Lane", "dir": "_stash/449-Oxford-Lane"},
+    {"key": "445-Oxford-Lane", "label": "445-Oxford-Lane", "dir": "_stash/445-Oxford-Lane"},
+    {"key": "Terrys", "label": "Terrys", "dir": "_stash/terrys"},
+    {"key": "models", "label": "Models", "dir": "_stash/models"},
+    {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
+    {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
 ]
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
@@ -1432,7 +1440,7 @@ HTML_TEMPLATE = r"""
         {% if cards %}
         <div class="grid" style="margin-bottom: 50px;">
             {% for c in cards %}
-            <div class="card" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
+            <div class="card" data-card-id="{{ c.id }}" onclick="handleGridClick(event, '{{ c.id }}')" oncontextmenu="handleHeroCtx(event, '{{ c.id }}')">
                 <div class="hero-preview">
                     {% if c.comp_hash %}
                     <img src="/composite/{{ c.comp_hash }}.jpg" loading="lazy">
@@ -1601,6 +1609,7 @@ HTML_TEMPLATE = r"""
         let showFaceOverlay = false;
         let activeJobId = null;
         let activeJobPollTimer = null;
+        let pendingPostSuccessAction = null;
 
         function hideContextMenu() {
             const menu = document.getElementById('context-menu');
@@ -1622,6 +1631,22 @@ HTML_TEMPLATE = r"""
                 return Array.from(cardScopes[menuContext.cardId]);
             }
             return null;
+        }
+
+        function buildFastTagsPostAction() {
+            if (window.location.pathname === '/tags' && menuContext.kind === 'hero' && menuContext.cardId) {
+                return { type: 'remove-tag-card', cardId: String(menuContext.cardId) };
+            }
+            return null;
+        }
+
+        function applyFastPostSuccessAction(action) {
+            if (!action || action.type !== 'remove-tag-card' || !action.cardId) return false;
+            const selector = '.card[data-card-id="' + String(action.cardId).replace(/"/g, '\"') + '"]';
+            const card = document.querySelector(selector);
+            if (!card) return false;
+            card.remove();
+            return true;
         }
 
         function configureContextMenuFor(kind) {
@@ -1648,6 +1673,7 @@ HTML_TEMPLATE = r"""
                 activeJobPollTimer = null;
             }
             activeJobId = null;
+            pendingPostSuccessAction = null;
         }
 
         function updateProgressDialog(data) {
@@ -1683,12 +1709,19 @@ HTML_TEMPLATE = r"""
                 if (data.status === 'completed') {
                     activeJobId = null;
                     activeJobPollTimer = null;
-                    setTimeout(() => location.reload(), 700);
+                    const action = pendingPostSuccessAction;
+                    pendingPostSuccessAction = null;
+                    if (applyFastPostSuccessAction(action)) {
+                        setTimeout(() => closeProgressDialog(), 250);
+                    } else {
+                        setTimeout(() => location.reload(), 700);
+                    }
                     return;
                 }
                 if (data.status === 'error') {
                     activeJobId = null;
                     activeJobPollTimer = null;
+                    pendingPostSuccessAction = null;
                     return;
                 }
                 activeJobPollTimer = setTimeout(() => pollJob(jobId), 400);
@@ -1711,6 +1744,7 @@ HTML_TEMPLATE = r"""
             hideContextMenu();
             hideSelectionStashMenu();
             if (!payload || !payload.sha1_list || payload.sha1_list.length === 0) return;
+            pendingPostSuccessAction = payload._afterSuccessAction || null;
             updateProgressDialog({
                 title: payload.title || 'Working…',
                 subtitle: payload.subtitle || '',
@@ -2419,6 +2453,7 @@ HTML_TEMPLATE = r"""
                 sha1_list: sha1List,
                 title,
                 subtitle,
+                _afterSuccessAction: options.afterSuccessAction || null,
             };
             startBackgroundOperation(payload);
         }
@@ -2437,7 +2472,9 @@ HTML_TEMPLATE = r"""
 
         function moveContextTo(target) {
             const sha1List = getContextTargets(menuSha1);
-            moveSha1List(target, sha1List);
+            moveSha1List(target, sha1List, {
+                afterSuccessAction: buildFastTagsPostAction(),
+            });
         }
 
         function moveContextToStash(categoryKey) {
@@ -2445,6 +2482,7 @@ HTML_TEMPLATE = r"""
             moveSha1List(getStashCategoryDir(categoryKey), sha1List, {
                 title: 'Moving to Stash',
                 subtitle: stashCategories.find(x => x.key === categoryKey)?.label || 'Stash',
+                afterSuccessAction: buildFastTagsPostAction(),
             });
         }
 
