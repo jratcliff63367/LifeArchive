@@ -496,7 +496,11 @@ HTML_TEMPLATE = r"""
         .menu-item.hidden {
             display: none;
         }
-        .menu-arr.submenu {
+        .menu-arrow {
+            float: right;
+            opacity: 0.8;
+        }
+        .submenu {
             display: none;
             position: absolute;
             top: 0;
@@ -509,9 +513,6 @@ HTML_TEMPLATE = r"""
             border: 1px solid #444;
             border-radius: 8px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            padding: 6px 0;
-            color: #e5e7eb;
-        } 0, 0.5);
             padding: 6px 0;
             color: #e5e7eb;
         }
