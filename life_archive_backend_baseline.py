@@ -88,7 +88,7 @@ TAG_EXCLUSIONS = {
     "topaz-undated",
 }
 
-STASH_CATEGORIES = [
+STASH_CATEGORIES = sorted([
     {"key": "general", "label": "General", "dir": "_stash"},
     {"key": "game-art", "label": "Old Game Art", "dir": "_stash/game-art"},
     {"key": "screenshots", "label": "Screenshots", "dir": "_stash/screenshots"},
@@ -104,7 +104,7 @@ STASH_CATEGORIES = [
     {"key": "models", "label": "Models", "dir": "_stash/models"},
     {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
     {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
-]
+], key=lambda item: str(item["label"]).lower())
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
 HTML_TEMPLATE = r"""
