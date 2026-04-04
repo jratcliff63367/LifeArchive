@@ -104,6 +104,7 @@ STASH_CATEGORIES = sorted([
     {"key": "models", "label": "Models", "dir": "_stash/models"},
     {"key": "architecture", "label": "Architecture", "dir": "_stash/architecture"},
     {"key": "masonic", "label": "Masonic", "dir": "_stash/masonic"},
+    {"key": "undated", "label": "Undated", "dir": "_stash/undated"},
 ], key=lambda item: str(item["label"]).lower())
 STASH_CATEGORY_MAP = {item["key"]: item["dir"] for item in STASH_CATEGORIES}
 
