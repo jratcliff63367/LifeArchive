@@ -960,8 +960,12 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     <div id="context-menu">
-        <div class="menu-item" data-role="select-filesystem-date" onclick="selectSpecialFromContext('filesystem_date')">Select File System Date</div>
-        <div class="menu-item" data-role="select-no-gps" onclick="selectSpecialFromContext('no_gps')">Select No GPS</div>
+        <div class="menu-item has-submenu" data-role="select-images">Select Images <span class="menu-arrow">▸</span>
+            <div class="submenu">
+                <div class="menu-item" data-role="select-filesystem-date" onclick="selectSpecialFromContext('filesystem_date')">Select File System Date</div>
+                <div class="menu-item" data-role="select-no-gps" onclick="selectSpecialFromContext('no_gps')">Select No GPS</div>
+            </div>
+        </div>
         <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
         <div class="menu-item" data-role="cull-move" onclick="startCullMoveFromContext()">Cull Move</div>
         <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
@@ -1828,7 +1832,7 @@ HTML_TEMPLATE = r"""
             const menu = document.getElementById('context-menu');
             if (!menu) return;
 
-            const photoGridOnly = ['select-filesystem-date', 'select-no-gps', 'cull-select', 'cull-move'];
+            const photoGridOnly = ['select-images', 'select-filesystem-date', 'select-no-gps', 'cull-select', 'cull-move'];
             photoGridOnly.forEach(role => {
                 const el = menu.querySelector(`[data-role="${role}"]`);
                 if (!el) return;
