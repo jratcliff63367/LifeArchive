@@ -966,6 +966,15 @@ HTML_TEMPLATE = r"""
                 <div class="menu-item" data-role="select-no-gps" onclick="selectSpecialFromContext('no_gps')">Select No GPS</div>
             </div>
         </div>
+        <div class="menu-item has-submenu" data-role="sort-images">Sort Images <span class="menu-arrow">▸</span>
+            <div class="submenu">
+                <div class="menu-item" data-role="sort-default" onclick="applyThumbnailSortFromContext('default')">Sort Default</div>
+                <div class="menu-item" data-role="sort-quality" onclick="applyThumbnailSortFromContext('quality')">Sort by Image Quality</div>
+                <div class="menu-item" data-role="sort-size" onclick="applyThumbnailSortFromContext('size')">Sort by Image Size</div>
+                <div class="menu-item" data-role="sort-location" onclick="applyThumbnailSortFromContext('location')">Sort by Image Location</div>
+                <div class="menu-item" data-role="sort-time" onclick="applyThumbnailSortFromContext('time')">Sort by Image Time</div>
+            </div>
+        </div>
         <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
         <div class="menu-item" data-role="cull-move" onclick="startCullMoveFromContext()">Cull Move</div>
         <div class="menu-item" data-role="trash" onclick="moveContextTo('trash')">Move to Trash</div>
@@ -1487,7 +1496,14 @@ HTML_TEMPLATE = r"""
         {% if photos %}
         <div class="photo-grid">
             {% for p in photos %}
-            <div class="card photo-card" data-sha="{{ p.sha1 }}" oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
+            <div class="card photo-card"
+                 data-sha="{{ p.sha1 }}"
+                 data-sort-quality="{{ '%.6f' % (p._sort_quality or 0.0) }}"
+                 data-sort-size="{{ '%.0f' % (p._sort_size or 0.0) }}"
+                 data-sort-time="{{ p._sort_time or '' }}"
+                 data-sort-location="{{ p._sort_location or '' }}"
+                 data-sort-location-text="{{ p._sort_location_text or '' }}"
+                 oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
                 <div class="cluster-badge"></div>
                 <div class="keeper-badge"></div>
                 <div class="photo-select-wrap">
@@ -1833,7 +1849,11 @@ HTML_TEMPLATE = r"""
             const menu = document.getElementById('context-menu');
             if (!menu) return;
 
-            const photoGridOnly = ['select-images', 'select-filesystem-date', 'select-no-gps', 'cull-select', 'cull-move'];
+            const photoGridOnly = [
+                'select-images', 'select-filesystem-date', 'select-no-gps',
+                'sort-images', 'sort-default', 'sort-quality', 'sort-size', 'sort-location', 'sort-time',
+                'cull-select', 'cull-move'
+            ];
             photoGridOnly.forEach(role => {
                 const el = menu.querySelector(`[data-role="${role}"]`);
                 if (!el) return;
@@ -2405,6 +2425,28 @@ HTML_TEMPLATE = r"""
 
             ensurePhotoCardOriginalOrder();
             const cards = Array.from(grid.querySelectorAll('.photo-card[data-sha]'));
+
+            function numDesc(aVal, bVal) {
+                const aNum = Number(aVal || '0');
+                const bNum = Number(bVal || '0');
+                if (aNum !== bNum) return bNum - aNum;
+                return 0;
+            }
+
+            function strDesc(aVal, bVal) {
+                const aStr = String(aVal || '');
+                const bStr = String(bVal || '');
+                if (aStr === bStr) return 0;
+                return aStr < bStr ? 1 : -1;
+            }
+
+            function strAsc(aVal, bVal) {
+                const aStr = String(aVal || '');
+                const bStr = String(bVal || '');
+                if (aStr === bStr) return 0;
+                return aStr < bStr ? -1 : 1;
+            }
+
             cards.sort((a, b) => {
                 const aOrder = Number(a.dataset.originalOrder || '0');
                 const bOrder = Number(b.dataset.originalOrder || '0');
@@ -2413,6 +2455,21 @@ HTML_TEMPLATE = r"""
                     const aSel = selectedSha1s.has(a.dataset.sha) ? 1 : 0;
                     const bSel = selectedSha1s.has(b.dataset.sha) ? 1 : 0;
                     if (aSel !== bSel) return bSel - aSel;
+                } else if (mode === 'quality') {
+                    const cmp = numDesc(a.dataset.sortQuality, b.dataset.sortQuality);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'size') {
+                    const cmp = numDesc(a.dataset.sortSize, b.dataset.sortSize);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'time') {
+                    const cmp = strDesc(a.dataset.sortTime, b.dataset.sortTime);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'location') {
+                    const aHas = a.dataset.sortLocation ? 1 : 0;
+                    const bHas = b.dataset.sortLocation ? 1 : 0;
+                    if (aHas !== bHas) return bHas - aHas;
+                    const cmp = strAsc(a.dataset.sortLocation, b.dataset.sortLocation);
+                    if (cmp !== 0) return cmp;
                 }
 
                 return aOrder - bOrder;
@@ -2423,6 +2480,12 @@ HTML_TEMPLATE = r"""
 
         function clearThumbnailSort() {
             sortPhotoGridByMode('default');
+        }
+
+        function applyThumbnailSortFromContext(mode) {
+            hideContextMenu();
+            hideSelectionStashMenu();
+            sortPhotoGridByMode(mode || 'default');
         }
 
         function toggleSelection(sha1) {
@@ -4679,6 +4742,24 @@ def create_app(config: ArchiveConfig) -> Flask:
         kwargs.setdefault('places_view', None)
         kwargs.setdefault('places_map_view', None)
         kwargs.setdefault('auto_open', None)
+
+        photos = kwargs.get('photos')
+        if isinstance(photos, list):
+            for item in photos:
+                if not isinstance(item, dict):
+                    continue
+                item['_sort_quality'] = float(store.get_hero_score(item))
+                item['_sort_size'] = float(_safe_float(item.get('file_size'), 0.0))
+                item['_sort_time'] = str(item.get('final_dt') or '')
+                if store.has_valid_gps(item):
+                    lat = float(item.get('latitude') or 0.0)
+                    lon = float(item.get('longitude') or 0.0)
+                    item['_sort_location'] = f"{lat:+011.6f}|{lon:+011.6f}"
+                    item['_sort_location_text'] = f"{lat:.6f}, {lon:.6f}"
+                else:
+                    item['_sort_location'] = ''
+                    item['_sort_location_text'] = ''
+
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
     @app.route("/media/<path:relative_path>")
