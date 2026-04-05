@@ -1623,6 +1623,7 @@ HTML_TEMPLATE = r"""
         let menuSha1 = '';
         let menuContext = { kind: 'photo', cardId: null };
         let selectedSha1s = new Set();
+        let currentThumbnailSortMode = 'default';
         let currentMeta = null;
         let currentTab = 'overview';
         let showFaceOverlay = false;
@@ -2363,6 +2364,9 @@ HTML_TEMPLATE = r"""
                 const cb = card.querySelector('.photo-select-checkbox');
                 if (cb) cb.checked = checked;
             });
+
+            sortPhotoGridByMode(currentThumbnailSortMode);
+
             const bar = document.getElementById('selection-bar');
             const count = selectedSha1s.size;
             if (bar) {
@@ -2381,6 +2385,46 @@ HTML_TEMPLATE = r"""
             selectedSha1s.clear();
             clearClusterVisuals();
             refreshSelectionUI();
+        }
+
+        function getPhotoGridElement() {
+            return document.querySelector('.photo-grid');
+        }
+
+        function ensurePhotoCardOriginalOrder() {
+            document.querySelectorAll('.photo-card[data-sha]').forEach((card, idx) => {
+                if (!card.dataset.originalOrder) {
+                    card.dataset.originalOrder = String(idx);
+                }
+            });
+        }
+
+        function sortPhotoGridByMode(mode) {
+            if (!mode) mode = 'default';
+            currentThumbnailSortMode = mode;
+            const grid = getPhotoGridElement();
+            if (!grid) return;
+
+            ensurePhotoCardOriginalOrder();
+            const cards = Array.from(grid.querySelectorAll('.photo-card[data-sha]'));
+            cards.sort((a, b) => {
+                const aOrder = Number(a.dataset.originalOrder || '0');
+                const bOrder = Number(b.dataset.originalOrder || '0');
+
+                if (mode === 'selected') {
+                    const aSel = selectedSha1s.has(a.dataset.sha) ? 1 : 0;
+                    const bSel = selectedSha1s.has(b.dataset.sha) ? 1 : 0;
+                    if (aSel !== bSel) return bSel - aSel;
+                }
+
+                return aOrder - bOrder;
+            });
+
+            cards.forEach(card => grid.appendChild(card));
+        }
+
+        function clearThumbnailSort() {
+            sortPhotoGridByMode('default');
         }
 
         function toggleSelection(sha1) {
@@ -2422,6 +2466,7 @@ HTML_TEMPLATE = r"""
 
                 clearClusterVisuals();
                 selectedSha1s = new Set(data.matches || []);
+                currentThumbnailSortMode = 'selected';
                 refreshSelectionUI();
             } catch (err) {
                 console.error(err);
@@ -2885,6 +2930,8 @@ HTML_TEMPLATE = r"""
         });
 
         document.addEventListener('DOMContentLoaded', () => {
+            ensurePhotoCardOriginalOrder();
+
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {
                     e.stopPropagation();
