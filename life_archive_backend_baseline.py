@@ -2365,8 +2365,6 @@ HTML_TEMPLATE = r"""
                 if (cb) cb.checked = checked;
             });
 
-            sortPhotoGridByMode(currentThumbnailSortMode);
-
             const bar = document.getElementById('selection-bar');
             const count = selectedSha1s.size;
             if (bar) {
@@ -2468,6 +2466,7 @@ HTML_TEMPLATE = r"""
                 selectedSha1s = new Set(data.matches || []);
                 currentThumbnailSortMode = 'selected';
                 refreshSelectionUI();
+                sortPhotoGridByMode(currentThumbnailSortMode);
             } catch (err) {
                 console.error(err);
                 alert('Special selection request failed.');
