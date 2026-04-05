@@ -74,6 +74,75 @@ werkzeug_log.setLevel(logging.ERROR)
 
 
 # ---------------------------------------------------------------------------
+# Semantic sort config (generated from semantic_frequency_analysis.py)
+# You can manually add/remove items after pasting this into the backend.
+# ---------------------------------------------------------------------------
+SEMANTIC_BOOLEAN_SORT_FIELDS = [
+    {"key": "contains_people", "label": "People"},
+    {"key": "contains_text", "label": "Text"},
+    {"key": "is_indoor_like", "label": "Indoor"},
+    {"key": "is_outdoor_like", "label": "Outdoor"},
+]
+
+SEMANTIC_LABEL_SORT_KEYS = [
+    "outdoor",
+    "text",
+    "people",
+    "landscape",
+    "nature",
+    "object_closeup",
+    "mountain",
+    "group",
+    "bananas",
+    "animal",
+    "landmark",
+    "portrait",
+    "table",
+    "indoor",
+    "dog",
+    "selfie",
+    "bird",
+    "waterfall",
+    "building",
+    "beach",
+]
+
+SEMANTIC_SCENE_TYPE_SORT_KEYS = [
+    "landscape",
+    "unknown",
+    "animal",
+    "group_photo",
+    "indoor_room",
+    "portrait",
+    "object_closeup",
+    "nature",
+    "vehicle",
+    "city",
+    "food",
+    "document",
+    "screenshot",
+]
+
+SEMANTIC_TAG_SORT_KEYS = [
+    "outdoor",
+    "people",
+    "indoor",
+    "landscape",
+    "animal",
+    "group_photo",
+    "indoor_room",
+    "portrait",
+    "object_closeup",
+    "nature",
+    "vehicle",
+    "city",
+    "food",
+    "document",
+    "screenshot",
+    "text",
+]
+
+# ---------------------------------------------------------------------------
 # Defaults / constants
 # ---------------------------------------------------------------------------
 DEFAULT_THEME_COLOR = "#bb86fc"
