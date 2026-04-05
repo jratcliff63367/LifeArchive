@@ -973,6 +973,13 @@ HTML_TEMPLATE = r"""
                 <div class="menu-item" data-role="sort-size" onclick="applyThumbnailSortFromContext('size')">Sort by Image Size</div>
                 <div class="menu-item" data-role="sort-location" onclick="applyThumbnailSortFromContext('location')">Sort by Image Location</div>
                 <div class="menu-item" data-role="sort-time" onclick="applyThumbnailSortFromContext('time')">Sort by Image Time</div>
+                <div class="menu-item" data-role="sort-animals" onclick="applyThumbnailSortFromContext('animals')">Sort Animals</div>
+                <div class="menu-item" data-role="sort-faces" onclick="applyThumbnailSortFromContext('faces')">Sort Faces</div>
+                <div class="menu-item" data-role="sort-indoor" onclick="applyThumbnailSortFromContext('indoor')">Sort Indoor</div>
+                <div class="menu-item" data-role="sort-text" onclick="applyThumbnailSortFromContext('text')">Sort with Text</div>
+                <div class="menu-item" data-role="sort-outdoor" onclick="applyThumbnailSortFromContext('outdoor')">Sort Outdoor</div>
+                <div class="menu-item" data-role="sort-landmark" onclick="applyThumbnailSortFromContext('landmark')">Sort Landmark</div>
+                <div class="menu-item" data-role="sort-closeup" onclick="applyThumbnailSortFromContext('closeup')">Sort Closeup</div>
             </div>
         </div>
         <div class="menu-item" data-role="cull-select" onclick="startCullSelectFromContext()">Cull Select</div>
@@ -1503,6 +1510,13 @@ HTML_TEMPLATE = r"""
                  data-sort-time="{{ p._sort_time or '' }}"
                  data-sort-location="{{ p._sort_location or '' }}"
                  data-sort-location-text="{{ p._sort_location_text or '' }}"
+                 data-sort-animals="{{ '%.6f' % (p._sort_animals or 0.0) }}"
+                 data-sort-faces="{{ '%.6f' % (p._sort_faces or 0.0) }}"
+                 data-sort-indoor="{{ '%.6f' % (p._sort_indoor or 0.0) }}"
+                 data-sort-text="{{ '%.6f' % (p._sort_text or 0.0) }}"
+                 data-sort-outdoor="{{ '%.6f' % (p._sort_outdoor or 0.0) }}"
+                 data-sort-landmark="{{ '%.6f' % (p._sort_landmark or 0.0) }}"
+                 data-sort-closeup="{{ '%.6f' % (p._sort_closeup or 0.0) }}"
                  oncontextmenu="handleCtx(event, '{{ p.sha1 }}')">
                 <div class="cluster-badge"></div>
                 <div class="keeper-badge"></div>
@@ -1852,6 +1866,7 @@ HTML_TEMPLATE = r"""
             const photoGridOnly = [
                 'select-images', 'select-filesystem-date', 'select-no-gps',
                 'sort-images', 'sort-default', 'sort-quality', 'sort-size', 'sort-location', 'sort-time',
+                'sort-animals', 'sort-faces', 'sort-indoor', 'sort-text', 'sort-outdoor', 'sort-landmark', 'sort-closeup',
                 'cull-select', 'cull-move'
             ];
             photoGridOnly.forEach(role => {
@@ -2433,6 +2448,13 @@ HTML_TEMPLATE = r"""
                 return 0;
             }
 
+            function numAsc(aVal, bVal) {
+                const aNum = Number(aVal || '0');
+                const bNum = Number(bVal || '0');
+                if (aNum !== bNum) return aNum - bNum;
+                return 0;
+            }
+
             function strDesc(aVal, bVal) {
                 const aStr = String(aVal || '');
                 const bStr = String(bVal || '');
@@ -2456,10 +2478,10 @@ HTML_TEMPLATE = r"""
                     const bSel = selectedSha1s.has(b.dataset.sha) ? 1 : 0;
                     if (aSel !== bSel) return bSel - aSel;
                 } else if (mode === 'quality') {
-                    const cmp = numDesc(a.dataset.sortQuality, b.dataset.sortQuality);
+                    const cmp = numAsc(a.dataset.sortQuality, b.dataset.sortQuality);
                     if (cmp !== 0) return cmp;
                 } else if (mode === 'size') {
-                    const cmp = numDesc(a.dataset.sortSize, b.dataset.sortSize);
+                    const cmp = numAsc(a.dataset.sortSize, b.dataset.sortSize);
                     if (cmp !== 0) return cmp;
                 } else if (mode === 'time') {
                     const cmp = strDesc(a.dataset.sortTime, b.dataset.sortTime);
@@ -2469,6 +2491,27 @@ HTML_TEMPLATE = r"""
                     const bHas = b.dataset.sortLocation ? 1 : 0;
                     if (aHas !== bHas) return bHas - aHas;
                     const cmp = strAsc(a.dataset.sortLocation, b.dataset.sortLocation);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'animals') {
+                    const cmp = numDesc(a.dataset.sortAnimals, b.dataset.sortAnimals);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'faces') {
+                    const cmp = numDesc(a.dataset.sortFaces, b.dataset.sortFaces);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'indoor') {
+                    const cmp = numDesc(a.dataset.sortIndoor, b.dataset.sortIndoor);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'text') {
+                    const cmp = numDesc(a.dataset.sortText, b.dataset.sortText);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'outdoor') {
+                    const cmp = numDesc(a.dataset.sortOutdoor, b.dataset.sortOutdoor);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'landmark') {
+                    const cmp = numDesc(a.dataset.sortLandmark, b.dataset.sortLandmark);
+                    if (cmp !== 0) return cmp;
+                } else if (mode === 'closeup') {
+                    const cmp = numDesc(a.dataset.sortCloseup, b.dataset.sortCloseup);
                     if (cmp !== 0) return cmp;
                 }
 
@@ -4745,9 +4788,80 @@ def create_app(config: ArchiveConfig) -> Flask:
 
         photos = kwargs.get('photos')
         if isinstance(photos, list):
+            semantic_by_sha1: dict[str, dict[str, Any]] = {}
+            face_by_sha1: dict[str, dict[str, Any]] = {}
+            ai_summary_by_sha1: dict[str, str] = {}
+
+            sha1s = [str(item.get('sha1') or '') for item in photos if isinstance(item, dict) and item.get('sha1')]
+            if sha1s:
+                placeholders = ','.join('?' for _ in sha1s)
+
+                if config.semantic_db_path.exists():
+                    try:
+                        with sqlite3.connect(config.semantic_db_path) as conn:
+                            conn.row_factory = sqlite3.Row
+                            rows = conn.execute(
+                                f"""
+                                SELECT sha1, contains_animals, contains_text, is_indoor_like, is_outdoor_like,
+                                       top_labels_json, ai_tags_json
+                                FROM semantic_scores
+                                WHERE sha1 IN ({placeholders})
+                                """,
+                                tuple(sha1s),
+                            ).fetchall()
+                        semantic_by_sha1 = {str(row['sha1']): dict(row) for row in rows}
+                    except Exception:
+                        semantic_by_sha1 = {}
+
+                if config.face_db_path.exists():
+                    try:
+                        with sqlite3.connect(config.face_db_path) as conn:
+                            conn.row_factory = sqlite3.Row
+                            rows = conn.execute(
+                                f"""
+                                SELECT sha1, face_count, largest_face_area_ratio
+                                FROM image_face_summary
+                                WHERE sha1 IN ({placeholders})
+                                """,
+                                tuple(sha1s),
+                            ).fetchall()
+                        face_by_sha1 = {str(row['sha1']): dict(row) for row in rows}
+                    except Exception:
+                        face_by_sha1 = {}
+
+                if config.ai_summary_db_path.exists():
+                    try:
+                        with sqlite3.connect(config.ai_summary_db_path) as conn:
+                            conn.row_factory = sqlite3.Row
+                            rows = conn.execute(
+                                f"""
+                                SELECT sha1, summary_text
+                                FROM ai_summaries
+                                WHERE sha1 IN ({placeholders})
+                                """,
+                                tuple(sha1s),
+                            ).fetchall()
+                        ai_summary_by_sha1 = {str(row['sha1']): str(row['summary_text'] or '') for row in rows}
+                    except Exception:
+                        ai_summary_by_sha1 = {}
+
+            landmark_keywords = (
+                'landmark', 'monument', 'temple', 'church', 'cathedral', 'castle',
+                'bridge', 'tower', 'statue', 'ruin', 'palace', 'shrine', 'memorial',
+                'pagoda', 'mosque', 'synagogue', 'capitol', 'courthouse', 'museum'
+            )
+
+            def _label_text_for_sort(value: Any) -> str:
+                if value is None:
+                    return ''
+                if isinstance(value, str):
+                    return value.lower()
+                return str(value).lower()
+
             for item in photos:
                 if not isinstance(item, dict):
                     continue
+                sha1 = str(item.get('sha1') or '')
                 item['_sort_quality'] = float(store.get_hero_score(item))
                 item['_sort_size'] = float(_safe_float(item.get('file_size'), 0.0))
                 item['_sort_time'] = str(item.get('final_dt') or '')
@@ -4759,6 +4873,29 @@ def create_app(config: ArchiveConfig) -> Flask:
                 else:
                     item['_sort_location'] = ''
                     item['_sort_location_text'] = ''
+
+                sem = semantic_by_sha1.get(sha1, {})
+                face = face_by_sha1.get(sha1, {})
+                summary_text = ai_summary_by_sha1.get(sha1, '').lower()
+
+                top_labels_text = _label_text_for_sort(sem.get('top_labels_json'))
+                ai_tags_text = _label_text_for_sort(sem.get('ai_tags_json'))
+                landmark_text = f"{top_labels_text} {ai_tags_text} {summary_text}"
+
+                face_count = float(_safe_float(face.get('face_count'), 0.0))
+                largest_face = float(_safe_float(face.get('largest_face_area_ratio'), 0.0))
+                closeup_score = max(
+                    float(_safe_float(largest_face, 0.0)),
+                    float(_safe_float(item.get('_sort_quality'), 0.0)) * 0.0,
+                )
+                # Give non-face closeups a path later via subject prominence when available; for now faces are the strongest signal.
+                item['_sort_animals'] = 1.0 if int(sem.get('contains_animals') or 0) == 1 else 0.0
+                item['_sort_faces'] = face_count
+                item['_sort_indoor'] = 1.0 if int(sem.get('is_indoor_like') or 0) == 1 else 0.0
+                item['_sort_text'] = 1.0 if int(sem.get('contains_text') or 0) == 1 else 0.0
+                item['_sort_outdoor'] = 1.0 if int(sem.get('is_outdoor_like') or 0) == 1 else 0.0
+                item['_sort_landmark'] = 1.0 if any(keyword in landmark_text for keyword in landmark_keywords) else 0.0
+                item['_sort_closeup'] = closeup_score
 
         return render_template_string(HTML_TEMPLATE, theme_color=config.theme_color, **kwargs)
 
