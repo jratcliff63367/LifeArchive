@@ -1723,6 +1723,7 @@ HTML_TEMPLATE = r"""
         let menuContext = { kind: 'photo', cardId: null };
         let selectedSha1s = new Set();
         let currentThumbnailSortMode = 'default';
+        const THUMBNAIL_ORDER_STORAGE_KEY = 'life_archive_thumbnail_order:' + window.location.pathname;
         let currentMeta = null;
         let currentTab = 'overview';
         let showFaceOverlay = false;
@@ -2029,6 +2030,8 @@ HTML_TEMPLATE = r"""
             hideContextMenu();
             hideSelectionStashMenu();
             if (!payload || !payload.sha1_list || payload.sha1_list.length === 0) return;
+
+            saveCurrentPhotoGridOrder();
             updateProgressDialog({
                 title: payload.title || 'Working…',
                 subtitle: payload.subtitle || '',
@@ -2493,6 +2496,64 @@ HTML_TEMPLATE = r"""
             return document.querySelector('.photo-grid');
         }
 
+        function getCurrentPhotoGridOrder() {
+            const grid = getPhotoGridElement();
+            if (!grid) return [];
+            return Array.from(grid.querySelectorAll('.photo-card[data-sha]'))
+                .map(card => String(card.dataset.sha || ''))
+                .filter(Boolean);
+        }
+
+        function saveCurrentPhotoGridOrder() {
+            try {
+                const order = getCurrentPhotoGridOrder();
+                if (order.length === 0) {
+                    sessionStorage.removeItem(THUMBNAIL_ORDER_STORAGE_KEY);
+                } else {
+                    sessionStorage.setItem(THUMBNAIL_ORDER_STORAGE_KEY, JSON.stringify(order));
+                }
+            } catch (err) {
+                console.warn('Unable to persist thumbnail order', err);
+            }
+        }
+
+        function loadSavedPhotoGridOrder() {
+            try {
+                const raw = sessionStorage.getItem(THUMBNAIL_ORDER_STORAGE_KEY);
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed.map(v => String(v || '')).filter(Boolean) : [];
+            } catch (err) {
+                return [];
+            }
+        }
+
+        function applySavedPhotoGridOrder() {
+            const grid = getPhotoGridElement();
+            if (!grid) return;
+
+            const savedOrder = loadSavedPhotoGridOrder();
+            if (!savedOrder.length) return;
+
+            const cards = Array.from(grid.querySelectorAll('.photo-card[data-sha]'));
+            const bySha = new Map(cards.map(card => [String(card.dataset.sha || ''), card]));
+            const appended = new Set();
+
+            for (const sha of savedOrder) {
+                const card = bySha.get(sha);
+                if (!card) continue;
+                grid.appendChild(card);
+                appended.add(sha);
+            }
+
+            for (const card of cards) {
+                const sha = String(card.dataset.sha || '');
+                if (!appended.has(sha)) {
+                    grid.appendChild(card);
+                }
+            }
+        }
+
         function ensurePhotoCardOriginalOrder() {
             document.querySelectorAll('.photo-card[data-sha]').forEach((card, idx) => {
                 if (!card.dataset.originalOrder) {
@@ -2598,6 +2659,7 @@ HTML_TEMPLATE = r"""
             hideContextMenu();
             hideSelectionStashMenu();
             sortPhotoGridByMode(mode || 'default');
+            saveCurrentPhotoGridOrder();
         }
 
         function toggleSelection(sha1) {
@@ -3105,6 +3167,7 @@ HTML_TEMPLATE = r"""
 
         document.addEventListener('DOMContentLoaded', () => {
             ensurePhotoCardOriginalOrder();
+            applySavedPhotoGridOrder();
 
             document.querySelectorAll('.photo-select-checkbox').forEach(cb => {
                 cb.addEventListener('click', (e) => {

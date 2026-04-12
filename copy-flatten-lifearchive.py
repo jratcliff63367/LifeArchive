@@ -8,6 +8,7 @@ from pathlib import Path
 # =========================
 TRASH_SOURCE_DIR = r"C:\LifeArchive\trash"
 STASH_SOURCE_DIR = r"C:\LifeArchive\_stash"
+CULL_SOURCE_DIR = r"C:\LifeArchive\_cull"
 DEST_ROOT        = r"C:\LifeFlatten"
 
 # JPEG only, matching the current utility script
@@ -103,6 +104,34 @@ def process_stash(dest_root: Path) -> tuple[int, int]:
 
     return total_found, total_copied
 
+def process_cull(dest_root: Path) -> tuple[int, int]:
+    cull_source = Path(CULL_SOURCE_DIR)
+
+    if not cull_source.exists():
+        print(f"WARNING: Cull source directory does not exist: {cull_source}")
+        return 0, 0
+
+    total_found = 0
+    total_copied = 0
+
+    subdirs = sorted([p for p in cull_source.iterdir() if p.is_dir()])
+
+    if not subdirs:
+        print(f"No subdirectories found under: {cull_source}")
+        print()
+        return 0, 0
+
+    for subdir in subdirs:
+        dest_dir = dest_root / subdir.name
+        found, copied = copy_flattened(subdir, dest_dir)
+        total_found += found
+        total_copied += copied
+
+    return total_found, total_copied
+
+
+
+
 
 def main():
     dest_root = Path(DEST_ROOT)
@@ -113,11 +142,13 @@ def main():
     print("========================================")
     print(f"Trash source: {TRASH_SOURCE_DIR}")
     print(f"Stash source: {STASH_SOURCE_DIR}")
+    print(f"Cull source: {CULL_SOURCE_DIR}")
     print(f"Destination root: {DEST_ROOT}")
     print()
 
     trash_found, trash_copied = process_trash(dest_root)
     stash_found, stash_copied = process_stash(dest_root)
+    cull_found, cull_copied = process_cull(dest_root)
 
     print("========================================")
     print("Summary")
@@ -126,6 +157,8 @@ def main():
     print(f"Trash JPEGs copied:  {trash_copied}")
     print(f"Stash JPEGs found:   {stash_found}")
     print(f"Stash JPEGs copied:  {stash_copied}")
+    print(f"Cull JPEGs found:   {cull_found}")
+    print(f"Cull JPEGs copied:  {cull_copied}")
     print(f"Grand total found:   {trash_found + stash_found}")
     print(f"Grand total copied:  {trash_copied + stash_copied}")
     print("Done.")
